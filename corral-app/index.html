@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Corral</title>
+<meta name="description" content="Recolector de datos para trabajo en corral, sin internet.">
+<meta name="theme-color" content="#17472D">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Corral">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header id="top"></header>
+<main id="main"></main>
+<nav id="nav" aria-label="Pestañas"></nav>
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="modal"></div>
+<input id="file" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden>
+<script src="vendor/xlsx.mini.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
