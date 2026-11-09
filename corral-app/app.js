@@ -1,6 +1,6 @@
 'use strict';
 /* Corral - recolector de datos. Todo vive en el celular (IndexedDB). */
-const VERSION = '1.0.0';
+const VERSION = '2.0.0';
 const BACKUP_SHEET = '_respaldo';
 const CFG = {
   hlMin: 80, hlMax: 350, entoreMin: 295, destMin: 80, destMax: 190,
@@ -22,7 +22,9 @@ const TABS = [
 /* ---------- estado ---------- */
 let meta = null, animals = new Map(), order = [], crias = new Map();
 let tab = 'inv', F = {inv:{}, palp:{}, peso:{}, dest:{}};
-let L = {q:'',sexo:'',lote:'',ea:'',repro:'',inv:'',reg:''};
+let L = {q:'',sexo:'',lote:'',ea:'',repro:'',inv:'',reg:'',vista:'anim'};
+/* Filtros del reloj de inventario: usan los datos con que se cargó el Excel */
+let P = {lote:'',ea:'',sexo:'',repro:''}, pSeg = 'faltan', progOpen = false, movRows = [];
 let db, installEvt = null, persisted = null;
 
 const $ = s => document.querySelector(s);
@@ -123,7 +125,7 @@ function toast(msg, undo){
   if(undo) $('#undoBtn').onclick=async()=>{ el.classList.remove('show'); await undo(); toast('Registro deshecho'); render(); };
 }
 function modal(html){ const m=$('#modal'); m.innerHTML=`<div class="sheet">${html}</div>`; m.classList.add('show'); return m; }
-function closeModal(){ const m=$('#modal'); m.classList.remove('show'); m.innerHTML=''; }
+function closeModal(){ progOpen=false; const m=$('#modal'); m.classList.remove('show'); m.innerHTML=''; }
 function confirmBox(title,msg,ok='Confirmar',danger=false,cancel='Volver'){
   return new Promise(res=>{
     const m=modal(`<h2>${esc(title)}</h2><p>${esc(msg)}</p><button class="big ${danger?'danger':''}" id="mOk">${esc(ok)}</button><button class="big sec" id="mNo">${esc(cancel)}</button>`);
@@ -157,25 +159,73 @@ function renderNav(){
 function renderMain(){
   const m=$('#main');
   if(!meta && tab!=='file') tab='file';
-  if(tab==='file') m.innerHTML=viewFile();
-  else if(tab==='list') m.innerHTML=viewList();
+  if(tab==='file'){ m.className='narrow'; m.innerHTML=viewFile(); }
+  else if(tab==='list'){ m.className='wide'; m.innerHTML=viewList(); }
   else {
     const f=F[tab]; const a=f.id?animals.get(f.id):null;
+    m.className='split';
     if(!a) { m.innerHTML=viewSearch(); pintarResultados(); }
-    else m.innerHTML = tab==='inv'?viewInv(a):tab==='palp'?viewPalp(a):tab==='peso'?viewPeso(a):viewDest(a);
+    else m.innerHTML = paneles(tab==='inv'?viewInv(a):tab==='palp'?viewPalp(a):tab==='peso'?viewPeso(a):viewDest(a));
   }
   if(!meta) renderNavLock();
 }
+/* En tablet horizontal: ficha del animal a la izquierda, formulario a la derecha */
+function paneles(h){ const i=h.indexOf('<!--R-->'); return i<0?`<div class="pane pr">${h}</div>`:`<div class="pane pl">${h.slice(0,i)}</div><div class="pane pr">${h.slice(i+8)}</div>`; }
 function renderNavLock(){ document.querySelectorAll('#nav button').forEach(b=>{ if(b.dataset.tab!=='file') b.style.opacity=.35; }); }
 
 const AYUDA={inv:'Número o chapeta del animal',palp:'Número o chapeta de la vaca',peso:'Número o chapeta del animal',dest:'Número de la vaca'};
 function viewSearch(){
   const f=F[tab]; const mode=f.abc?'':'readonly inputmode="none"';
-  return `<div class="searchbox"><input id="q" ${mode} autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="${AYUDA[tab]}" value="${esc(f.q||'')}"></div>
-  <div class="results" id="res"></div>
+  return `<div class="pane pl"><div class="searchbox"><input id="q" ${mode} autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="${AYUDA[tab]}" value="${esc(f.q||'')}"></div>
   <div class="keys">${[1,2,3,4,5,6,7,8,9].map(n=>`<button data-k="${n}">${n}</button>`).join('')}
     <button data-k="-">-</button><button data-k="0">0</button><button class="k2" data-k="del" aria-label="Borrar">⌫</button>
-    <button class="k2" data-k="abc">${f.abc?'123':'ABC'}</button><button class="go" data-k="ok">Buscar</button></div>`;
+    <button class="k2" data-k="abc">${f.abc?'123':'ABC'}</button><button class="go" data-k="ok">Buscar</button></div></div>
+  <div class="pane pr"><div class="results" id="res"></div>${tab==='inv'?progHTML():''}</div>`;
+}
+
+/* ---------- reloj de progreso del inventario ---------- */
+const P_LBL = {lote:'Lote',ea:'Categoría',sexo:'Sexo',repro:'Estado reprod.'};
+function progBase(){
+  return order.map(i=>animals.get(i)).filter(a=>
+    (!P.lote||a.lote===P.lote)&&(!P.ea||a.ea===P.ea)&&(!P.sexo||a.sexo===P.sexo)&&(!P.repro||(a.estado||'Sin dato')===P.repro));
+}
+function ringSVG(ok,tot){
+  const C=2*Math.PI*50, pct=tot?ok/tot:0, len=Math.max(0,Math.min(C,pct*C));
+  return `<svg class="ring" viewBox="0 0 120 120" role="img" aria-label="${Math.round(pct*100)}% inventariado"><circle class="bg" cx="60" cy="60" r="50"/>
+  <circle class="fg" cx="60" cy="60" r="50" stroke-dasharray="${len} ${C}" stroke-linecap="${len>0&&len<C?'round':'butt'}" transform="rotate(-90 60 60)"/>
+  <text x="60" y="60" text-anchor="middle" dominant-baseline="central">${Math.round(pct*100)}%</text></svg>`;
+}
+function filtSelects(){
+  const opt=(v,t,c)=>`<option value="${esc(v)}" ${c===v?'selected':''}>${esc(t)}</option>`;
+  const all=order.map(i=>animals.get(i));
+  const lotes=[...new Set(all.map(a=>a.lote).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es'));
+  const eas=[...new Set(all.map(a=>a.ea).filter(Boolean))].sort();
+  const rep=[...new Set(all.map(a=>a.estado||'Sin dato'))].sort();
+  const sel=(k,html)=>`<select data-p="${k}" class="${P[k]?'set':''}" aria-label="${P_LBL[k]}">${html}</select>`;
+  return sel('lote',opt('','Lote: todos',P.lote)+lotes.map(l=>opt(l,l,P.lote)).join(''))+
+    sel('ea',opt('','Categoría: todas',P.ea)+eas.map(e=>opt(e,`${e} ${EA_TXT[e]||''}`,P.ea)).join(''))+
+    sel('sexo',opt('','Sexo: todos',P.sexo)+opt('H','Hembras',P.sexo)+opt('M','Machos',P.sexo))+
+    sel('repro',opt('','Reprod.: todos',P.repro)+rep.map(r=>opt(r,r,P.repro)).join(''));
+}
+function filtroTxt(){ const t=Object.keys(P).filter(k=>P[k]).map(k=>k==='sexo'?(P.sexo==='H'?'Hembras':'Machos'):P[k]); return t.length?t.join(' · '):'Todos los animales'; }
+function progHTML(){
+  const b=progBase(), ok=b.filter(a=>a.w.inv).length, f=b.length-ok;
+  return `<div class="prog full"><button class="ringbtn" data-a="prog">${ringSVG(ok,b.length)}<div class="ptxt"><b>${ok} de ${b.length} inventariados</b>
+  <small><span class="ok">${ok} pasaron</span> · <span class="no">${f} faltan</span></small><small>${esc(filtroTxt())}</small></div><span class="pgo">${f?'Ver faltan':'Ver lista'}</span></button>
+  <div class="pfilt">${filtSelects()}</div></div>`;
+}
+function abrirProg(){
+  const b=progBase(), hechos=b.filter(a=>a.w.inv), faltan=b.filter(a=>!a.w.inv);
+  const lista=pSeg==='faltan'?faltan:hechos;
+  const fila=a=>`<button class="res ${a.w.inv?'done':''}" data-pinv="${esc(a.id)}"><b>${esc(a.id)}</b><span>${esc(a.ea)} · ${esc(colorTxt(a))} · ${esc(ieTxt(a))} · ${esc(a.lote)}</span></button>`;
+  const m=modal(`<div class="chead"><div class="num">Inventario</div><button class="close" data-a="closeM">Cerrar</button></div>
+  <div class="prog pbig"><div class="ringbtn">${ringSVG(hechos.length,b.length)}<div class="ptxt"><b>${hechos.length} de ${b.length}</b><small><span class="ok">${hechos.length} pasaron</span> · <span class="no">${faltan.length} faltan</span></small><small>${esc(filtroTxt())}</small></div></div>
+  <div class="pfilt">${filtSelects()}</div></div>
+  <div class="seg"><button data-pseg="faltan" class="${pSeg==='faltan'?'on':''}">Faltan (${faltan.length})</button><button data-pseg="hechos" class="${pSeg==='hechos'?'on':''}">Ya pasaron (${hechos.length})</button></div>
+  <p class="hint">${lista.length?'Toque un animal para abrirlo en Inventario.':pSeg==='faltan'?'No falta ningún animal con este filtro.':'Aún no ha pasado ningún animal con este filtro.'}</p>
+  <div class="plist">${lista.map(fila).join('')}</div>`);
+  progOpen=true;
+  return m;
 }
 function pintarResultados(){
   const f=F[tab], el=$('#res'); if(!el) return;
@@ -228,7 +278,7 @@ function comunes(a,f,opts={}){
 /* ---- inventario ---- */
 function viewInv(a){
   const f=F.inv;
-  return `<div class="card">${head(a)}${kv([['Color',colorTxt(a)],['I.E.',ieTxt(a)],['Lote',loteNow(a)],[a.ea==='TR'||!esCria(a)&&a.emes>=24?'Edad':'Edad',a.emes>=24?`${num(anosNow(a))} años`:`${num(mesesNow(a))} meses`],['Sexo',a.sexo==='H'?'Hembra':'Macho'],a.madre?['Madre',a.madre]:null,comentLine(a)])}</div>
+  return `<div class="card">${head(a)}${kv([['Color',colorTxt(a)],['I.E.',ieTxt(a)],['Lote',loteNow(a)],[a.ea==='TR'||!esCria(a)&&a.emes>=24?'Edad':'Edad',a.emes>=24?`${num(anosNow(a))} años`:`${num(mesesNow(a))} meses`],['Sexo',a.sexo==='H'?'Hembra':'Macho'],a.madre?['Madre',a.madre]:null,comentLine(a)])}</div><!--R-->
   ${comunes(a,f)}
   <div class="savebar"><button class="big" data-a="saveInv">Guardar</button></div>`;
 }
@@ -259,7 +309,7 @@ function viewPalp(a){
   const items=[['Estado reprod.',estadoNow(a)],['Color',colorTxt(a)],['I.E.',ieTxt(a)],['Lote',loteNow(a)],['Edad',`${num(anosNow(a))} años`],['EA',eaNow(a)],['#P',a.np],
     estadoNow(a)==='Preñada'?['Gest.',`${g} días`]:null,['D.Ab',dabNow(a)],['UIEP',a.uiep],estadoNow(a)==='Vacía'?['Det. Ult. Tacto',detNow(a)||'Sin dato']:null,comentLine(a)];
   const bt=(k,t,c='')=>`<button class="opt ${c} ${f.modo===k?'on':''}" data-modo="${k}">${t}</button>`;
-  let out=`<div class="card">${head(a)}${kv(items)}</div>`;
+  let out=`<div class="card">${head(a)}${kv(items)}</div><!--R-->`;
   if(ya) out+=`<div class="alert b">Ya tiene palpación registrada. Puede corregirla aquí.</div>`;
   if(pren&&gestBaseNow(a)>=CFG.gestRevisar) out+=`<div class="alert a">Revisar: registra ${gestBaseNow(a)} días de gestación.</div>`;
   out+=`<div class="opts ${pren?'c3':''}">${pren?bt('C','Confirmar preñez')+bt('P','Cambiar días')+bt('V','Vacía','bad'):bt('P','Preñada')+bt('V','Vacía','bad')}</div>`;
@@ -338,7 +388,7 @@ function livePeso(a,f){
 function viewPeso(a){
   const f=F.peso;
   if(a.ea!=='HL') return `<div class="card">${head(a)}${kv([['Color',colorTxt(a)],['Lote',loteNow(a)]])}</div><div class="alert a">Solo se pesan las hembras de levante.</div><button class="big sec" data-a="toInv">Ir a inventario manual</button>`;
-  return `<div class="card">${head(a)}${kv([['Color',colorTxt(a)],['Lote',loteNow(a)],['Edad',`${num(mesesNow(a))} meses`],['Fecha último peso',fmtD(a.fupeso)],['Último peso',a.upeso?`${num(a.upeso)} kg`:'—'],['GMD anterior',gmdLabel(a)],['I.E.',ieTxt(a),true],comentLine(a)])}</div>
+  return `<div class="card">${head(a)}${kv([['Color',colorTxt(a)],['Lote',loteNow(a)],['Edad',`${num(mesesNow(a))} meses`],['Fecha último peso',fmtD(a.fupeso)],['Último peso',a.upeso?`${num(a.upeso)} kg`:'—'],['GMD anterior',gmdLabel(a)],['I.E.',ieTxt(a),true],comentLine(a)])}</div><!--R-->
   ${a.w.peso?'<div class="alert b">Ya tiene peso registrado. Puede corregirlo aquí.</div>':''}
   <div class="field"><label for="fPeso">Peso nuevo (kg)</label><input class="huge" id="fPeso" data-f="valor" inputmode="decimal" value="${esc(f.valor)}" placeholder="kg"></div>
   <div id="live" style="display:flex;flex-direction:column;gap:10px">${livePeso(a,f)}</div>
@@ -364,7 +414,7 @@ function viewDest(a){
   const c=animals.get(f.criaId);
   const multi=list.length>1?`<div class="opts">${list.map(i=>`<button class="opt ${i===f.criaId?'on':''}" data-cria="${esc(i)}">${esc(i)}</button>`).join('')}</div>`:'';
   let h=`<div class="card">${head(a)}${esCria(a)?'':kv([['Color',colorTxt(a)],['Lote',loteNow(a)]])}</div>${multi}
-  <div class="card"><h3>Cría</h3>${kv([['# de la cría',c.id],['Sexo cría',c.sexo==='H'?'Hembra':'Macho'],['Edad',`${num(mesesNow(c))} meses`],['Color',colorTxt(c)],c.az?['Chapeta','AZ '+c.az,true]:null,comentLine(c)])}</div>
+  <div class="card"><h3>Cría</h3>${kv([['# de la cría',c.id],['Sexo cría',c.sexo==='H'?'Hembra':'Macho'],['Edad',`${num(mesesNow(c))} meses`],['Color',colorTxt(c)],c.az?['Chapeta','AZ '+c.az,true]:null,comentLine(c)])}</div><!--R-->
   ${c.w.dest?'<div class="alert b">Ya tiene decisión registrada. Puede corregirla aquí.</div>':''}
   <div class="opts"><button class="opt ${f.dec==='si'?'on':''}" data-dec="si">Destetar</button><button class="opt bad ${f.dec==='no'?'on':''}" data-dec="no">No destetar</button></div>`;
   if(f.dec==='si'){
@@ -451,7 +501,9 @@ function viewList(){
   const opt=(v,t,c)=>`<option value="${esc(v)}" ${c===v?'selected':''}>${esc(t)}</option>`;
   const lotes=[...new Set(order.map(i=>loteNow(animals.get(i))))].sort();
   const eas=[...new Set(order.map(i=>eaNow(animals.get(i))))].sort();
-  return `${statsList()}<div class="filters">
+  const seg=`<div class="seg"><button data-lv="anim" class="${L.vista!=='mov'?'on':''}">Animales</button><button data-lv="mov" class="${L.vista==='mov'?'on':''}">Resumen de movimientos</button></div>`;
+  if(L.vista==='mov') return seg+viewMov();
+  return `${seg}${statsList()}<div class="filters">
   <input data-l="q" placeholder="Buscar número o chapeta" value="${esc(L.q)}" autocomplete="off">
   <select data-l="sexo" aria-label="Sexo">${opt('','Sexo: todos',L.sexo)+opt('H','Hembras',L.sexo)+opt('M','Machos',L.sexo)}</select>
   <select data-l="lote" aria-label="Lote">${opt('','Lote: todos',L.lote)+lotes.map(l=>opt(l,l,L.lote)).join('')}</select>
@@ -461,7 +513,35 @@ function viewList(){
   <select data-l="reg" aria-label="Registros">${opt('','Registros: todos',L.reg)+opt('palp','Palpadas',L.reg)+opt('pren','Pasaron preñadas',L.reg)+opt('peso','Pesados',L.reg)+opt('entore','Entoradas',L.reg)+opt('dest','Destetados',L.reg)+opt('mov','Movidos',L.reg)+opt('alerta','Con alerta',L.reg)}</select>
   </div><div id="listBody">${listBody()}</div>`;
 }
-function listBody(){ const r=filtrar(); return `<p class="hint">${r.length} animales</p><div class="list">${r.map(rowHTML).join('')}</div>`; }
+function listBody(){ const r=filtrar(); return `<p class="hint">${r.length} animales</p><div class="list grid">${r.map(rowHTML).join('')}</div>`; }
+/* ---- resumen de movimientos: lote de origen -> lote de destino ---- */
+const MOTIVOS = ['Movimiento','Entore','Destete'];
+function movResumen(){
+  const g=new Map();
+  for(const id of order){ const a=animals.get(id), m=a.w.mov; if(!m) continue;
+    const k=m.de+'\u0001'+m.a;
+    if(!g.has(k)) g.set(k,{de:m.de||'Sin lote',a:m.a,n:0,mot:{},ids:[]});
+    const r=g.get(k); r.n++; r.mot[m.motivo]=(r.mot[m.motivo]||0)+1; r.ids.push(id);
+  }
+  return [...g.values()].sort((x,y)=>x.de.localeCompare(y.de,'es')||y.n-x.n||x.a.localeCompare(y.a,'es'));
+}
+const motTxt = r => MOTIVOS.filter(m=>r.mot[m]).map(m=>`${m==='Movimiento'?'Manual':m} ${r.mot[m]}`).join(' · ');
+function viewMov(){
+  movRows=movResumen(); const tot=movRows.reduce((s,r)=>s+r.n,0);
+  if(!movRows.length) return '<p class="hint">Aún no se ha movido ningún animal de lote.</p>';
+  const lotesO=new Set(movRows.map(r=>r.de)).size, lotesD=new Set(movRows.map(r=>r.a)).size;
+  return `<div class="stats" style="grid-template-columns:repeat(3,1fr)"><div><b>${tot}</b><small>Animales movidos</small></div><div><b>${lotesO}</b><small>Lotes de origen</small></div><div><b>${lotesD}</b><small>Lotes de destino</small></div></div>
+  <table class="mtab"><thead><tr><th>Lote origen</th><th></th><th>Lote destino</th><th class="n">Animales</th></tr></thead><tbody>
+  ${movRows.map((r,i)=>`<tr data-mv="${i}"><td><b>${esc(r.de)}</b></td><td class="ar">→</td><td><b>${esc(r.a)}</b><small>${esc(motTxt(r))}</small></td><td class="n">${r.n}</td></tr>`).join('')}
+  </tbody><tfoot><tr><td colspan="3">Total</td><td class="n">${tot}</td></tr></tfoot></table>
+  <p class="hint">Toque una fila para ver los animales. Cuenta el último movimiento de cada animal, desde el lote con que se cargó el Excel.</p>`;
+}
+function verMov(i){
+  const r=movRows[i]; if(!r) return;
+  modal(`<div class="chead"><div class="num" style="font-size:calc(24px*var(--k))">${esc(r.de)} → ${esc(r.a)}</div><button class="close" data-a="closeM">Cerrar</button></div>
+  <p class="hint">${r.n} animales · ${esc(motTxt(r))}</p>
+  <div class="plist">${r.ids.map(id=>{const a=animals.get(id);return `<button class="res" data-det="${esc(id)}" data-open="1"><b>${esc(id)}</b><span>${esc(eaNow(a))} · ${esc(colorTxt(a))} · ${esc(ieTxt(a))} · ${esc(a.w.mov.motivo)}</span></button>`;}).join('')}</div>`);
+}
 function detalle(id){
   const a=animals.get(id), w=a.w, recs=[];
   const rec=(k,t)=>recs.push(`<div class="rec"><span>${esc(t)}</span><button data-del="${k}" data-id="${esc(id)}">Borrar</button></div>`);
@@ -543,6 +623,9 @@ function construirExcel(){
   hoja(wb,'Entores',['Número','I.E.','Peso','Lote anterior','Lote destino','EA nuevo','Fecha','Hora'],E);
   hoja(wb,'Destetes',['Madre','Cría','Sexo cría','Edad meses','Color','Destetada','Peso destete','Destino','Número nuevo','Lote cría','Lote madre','Fecha','Hora'],D);
   hoja(wb,'Movimientos',['Número','Lote anterior','Lote nuevo','Motivo','Fecha','Hora'],M);
+  const RM=movResumen().map(r=>[r.de,r.a,r.mot.Movimiento||0,r.mot.Entore||0,r.mot.Destete||0,r.n]);
+  if(RM.length) RM.push(['TOTAL','',...[2,3,4,5].map(c=>RM.reduce((s,r)=>s+r[c],0))]);
+  hoja(wb,'Resumen movimientos',['Lote origen','Lote destino','Movimiento manual','Entore','Destete','Total animales'],RM);
   hoja(wb,'Observaciones',['Número','Lote','Observación','Fecha','Hora'],O);
   const m={...meta,order:undefined,cambios:0};
   const bk=XLSX.utils.aoa_to_sheet([['APP_CORRAL',1,order.length],['META',JSON.stringify(m)],...all.map(a=>[a.id,JSON.stringify(a)])]);
@@ -661,7 +744,7 @@ function pasoReemplazo(desc,finca,run){
 /* ---------- eventos ---------- */
 document.addEventListener('click',async e=>{
   if(!e.target.closest('#toast')) $('#toast').classList.remove('show');
-  const t=e.target.closest('button,[data-a]'); if(!t) return;
+  const t=e.target.closest('button,[data-a],[data-mv]'); if(!t) return;
   const d=t.dataset;
   if(d.tab){ if(!meta&&d.tab!=='file') return; tab=d.tab; $('#main').scrollTop=0; return render(); }
   if(d.k!==undefined){
@@ -673,6 +756,10 @@ document.addEventListener('click',async e=>{
     $('#q').value=f.q; return pintarResultados();
   }
   if(d.pick) return pick(d.pick);
+  if(d.pinv){ const id=d.pinv; closeModal(); tab='inv'; F.inv={}; render(); return pick(id); }
+  if(d.pseg){ pSeg=d.pseg; return abrirProg(); }
+  if(d.lv){ L.vista=d.lv; $('#main').scrollTop=0; return renderMain(); }
+  if(d.mv!==undefined) return verMov(+d.mv);
   if(d.open) return detalle(d.det);
   if(d.del) { return borrar(d.del,d.id); }
   if(d.go){ closeModal(); tab=d.go; F[tab]={}; render(); return pick(d.id); }
@@ -694,6 +781,7 @@ document.addEventListener('click',async e=>{
     case 'savePeso': return savePeso();
     case 'saveDest': return saveDest();
     case 'closeM': return closeModal();
+    case 'prog': return abrirProg();
     case 'upload': return $('#file').click();
     case 'download': return descargar();
     case 'share': return enviar();
@@ -719,6 +807,7 @@ document.addEventListener('input',e=>{
 });
 document.addEventListener('change',e=>{
   const el=e.target;
+  if(el.dataset.p){ P[el.dataset.p]=el.value; if(progOpen) abrirProg(); return renderMain(); }
   if(el.dataset.l&&el.dataset.l!=='q'){ L[el.dataset.l]=el.value; return renderMain(); }
   if(el.tagName==='SELECT'&&el.dataset.f){
     const k=el.dataset.f;
