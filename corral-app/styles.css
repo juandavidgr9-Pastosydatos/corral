@@ -195,3 +195,8 @@ main .searchbox{order:0}main .prog{order:1}main .results{order:2}main .keys{orde
 }
 
 .mtab th.n{font-size:calc(13px*var(--k))}
+
+.quick{display:flex;flex-direction:column;gap:calc(6px*var(--k))}
+.quick small{font-weight:700;color:var(--muted);font-size:calc(14px*var(--k))}
+.quick .opt{background:var(--bluebg);border-color:#B7D0E8;color:var(--blue)}
+.quick .opt.on{background:var(--blue);border-color:var(--blue);color:#fff}

@@ -1,6 +1,6 @@
 'use strict';
 /* Corral - recolector de datos. Todo vive en el celular (IndexedDB). */
-const VERSION = '2.0.0';
+const VERSION = '3.0.0';
 const BACKUP_SHEET = '_respaldo';
 const CFG = {
   hlMin: 80, hlMax: 350, entoreMin: 295, destMin: 80, destMax: 190,
@@ -15,14 +15,14 @@ const TABS = [
   ['palp','Palpar','<path d="M7 11V5a2 2 0 014 0v5M11 10V4a2 2 0 014 0v7M15 10V6a2 2 0 014 0v8a7 7 0 01-7 7h-1a7 7 0 01-6-3l-3-5a2 2 0 013-2l2 2"/>'],
   ['peso','Pesar','<path d="M4 8h16l-2 12H6L4 8z"/><path d="M8 8a4 4 0 018 0M12 13l2-2"/>'],
   ['dest','Destete','<circle cx="8" cy="7" r="3"/><circle cx="17" cy="11" r="2"/><path d="M3 20c0-4 2-7 5-7s5 3 5 7M14 20c0-3 1-5 3-5s3 2 3 5"/>'],
-  ['list','Listado','<path d="M3 5h18l-7 8v6l-4 2v-8z"/>'],
+  ['list','Movimientos','<path d="M4 8h14M15 5l3 3-3 3M20 16H6M9 13l-3 3 3 3"/>'],
   ['file','Archivo','<path d="M12 3v12M7 10l5 5 5-5M4 20h16"/>']
 ];
 
 /* ---------- estado ---------- */
 let meta = null, animals = new Map(), order = [], crias = new Map();
 let tab = 'inv', F = {inv:{}, palp:{}, peso:{}, dest:{}};
-let L = {q:'',sexo:'',lote:'',ea:'',repro:'',inv:'',reg:'',vista:'anim'};
+let L = {q:'',sexo:'',lote:'',ea:'',repro:'',inv:'',reg:'',vista:'mov'};
 /* Filtros del reloj de inventario: usan los datos con que se cargó el Excel */
 let P = {lote:'',ea:'',sexo:'',repro:''}, pSeg = 'faltan', progOpen = false, movRows = [];
 let db, installEvt = null, persisted = null;
@@ -250,12 +250,36 @@ function pick(id){
     const p=a.w.peso;
     F.peso={id, inv:a.w.inv!==false, valor:p?String(p.peso):'', entore:!!a.w.entore, loteEnt:a.w.entore?a.w.entore.lote:CFG.loteEntore, obs:a.w.obs||'', mov:''};
   } else F.inv={id, inv:a.w.inv!==false, obs:a.w.obs||'', mov:''};
+  F[tab]._ini=snap(F[tab]);
   $('#main').scrollTop=0; renderMain();
+}
+/* ---- aviso de datos sin guardar ---- */
+const TAB_TXT = {inv:'Inventario',palp:'Palpar',peso:'Pesar',dest:'Destete'};
+function snap(f){ const o={}; for(const k of Object.keys(f).sort()) if(!['q','abc','_ini'].includes(k)) o[k]=f[k]; return JSON.stringify(o); }
+function sinGuardar(){
+  const f=F[tab]; if(!f||!f.id||!TAB_TXT[tab]) return false;
+  if(snap(f)!==f._ini) return true;
+  const a=animals.get(f.id);   // en Inventario: abrió el animal pero aún no queda inventariado
+  return tab==='inv'&&a&&f.inv&&!a.w.inv;
+}
+const SAVE = {inv:()=>saveInv(),palp:()=>savePalp(),peso:()=>savePeso(),dest:()=>saveDest()};
+/* Devuelve true si se puede salir de la pantalla actual */
+function salir(){
+  if(!sinGuardar()) return Promise.resolve(true);
+  const t=tab, id=F[t].id;
+  return new Promise(res=>{
+    const m=modal(`<h2>No ha guardado</h2><p>El animal <b>${esc(id)}</b> tiene datos sin guardar en ${TAB_TXT[t]}.</p>
+    <button class="big" id="gSave">Guardar ahora</button><button class="big sec" id="gBack">Volver</button><button class="big danger" id="gOut">Salir sin guardar</button>`);
+    m.querySelector('#gBack').onclick=()=>{ closeModal(); res(false); };
+    m.querySelector('#gOut').onclick=()=>{ closeModal(); F[t]={}; res(true); };
+    m.querySelector('#gSave').onclick=async()=>{ closeModal(); await SAVE[t](); res(!F[t].id); };
+  });
 }
 function cargarDest(cid){
   const c=animals.get(cid), d=c.w.dest, f=F.dest;
   f.criaId=cid; f.dec=d?d.dec:''; f.peso=d&&d.peso?String(d.peso):''; f.dst=d?d.dst:''; f.nuevo=d?d.nuevo:'';
   const m=animals.get(f.id); f.obs=m.w.obs||''; f.mov='';
+  f._ini=snap(f);
 }
 function kv(items){ return `<div class="kv">${items.filter(Boolean).map(([k,v,w])=>`<div class="${w?'wide':''}"><small>${esc(k)}</small><b>${esc(v)}</b></div>`).join('')}</div>`; }
 function head(a){
@@ -269,8 +293,10 @@ const comentLine = a => a.coment ? ['Comentario',a.coment,true] : null;
 function comunes(a,f,opts={}){
   const lotes=meta.lotes.filter(l=>l!==loteNow(a));
   const sel=lotes.map(l=>`<option ${f.mov===l?'selected':''}>${esc(l)}</option>`).join('');
+  const q=opts.noMov?[]:rapidos(a);
+  const quick=q.length?`<div class="quick"><small>Mover rápido (últimos destinos)</small><div class="opts">${q.map(l=>`<button class="opt ${f.mov===l?'on':''}" data-qmov="${esc(l)}">→ ${esc(l)}</button>`).join('')}</div></div>`:'';
   return `<button class="switch ${f.inv?'on':''}" data-a="toggleInv"><span>Inventariado</span><i></i></button>
-  ${opts.noMov?'':`<details ${f.mov?'open':''}><summary>Mover de lote${f.mov?`: ${esc(f.mov)}`:''}</summary><div class="inner"><div class="field"><label for="fMov">Lote actual: ${esc(loteNow(a))}</label>
+  ${quick}${opts.noMov?'':`<details ${f.mov?'open':''}><summary>Mover de lote${f.mov?`: ${esc(f.mov)}`:''}</summary><div class="inner"><div class="field"><label for="fMov">Lote actual: ${esc(loteNow(a))}</label>
   <select id="fMov" data-f="mov"><option value="">Sin mover</option>${sel}<option value="__otro">Otro lote…</option></select></div></div></details>`}
   <details ${f.obs?'open':''}><summary>Observación</summary><div class="inner"><div class="field"><textarea data-f="obs" aria-label="Observación" placeholder="Opcional">${esc(f.obs||'')}</textarea></div></div></details>`;
 }
@@ -287,9 +313,16 @@ async function saveInv(){
   aplicarComunes(a,w,f,ts);
   await guardar([[a,w]], `${a.id}: ${f.inv?'inventariado':'guardado'}`); F.inv={}; render();
 }
+/* Últimos destinos usados: primero los que salieron del mismo lote */
+function recordarMov(de,a){ const r=(meta.recMov||[]).filter(x=>!(x.de===de&&x.a===a)); r.unshift({de,a}); meta.recMov=r.slice(0,15); }
+function rapidos(a){
+  const cur=loteNow(a), r=meta.recMov||[], out=[];
+  for(const x of [...r.filter(x=>x.de===cur),...r]) if(x.a!==cur&&!out.includes(x.a)) out.push(x.a);
+  return out.slice(0,3);
+}
 function aplicarComunes(a,w,f,ts,sinMov){
   if(f.inv!==!!w.inv||(f.inv&&!w.invTs)){ w.inv=f.inv; w.invTs=ts; }
-  if(!sinMov && f.mov) w.mov={de:a.lote,a:f.mov,motivo:'Movimiento',ts};
+  if(!sinMov && f.mov){ recordarMov(loteNow(a),f.mov); w.mov={de:a.lote,a:f.mov,motivo:'Movimiento',ts}; }
   const o=(f.obs||'').trim();
   if(o!==(w.obs||'')){ if(o){ w.obs=o; w.obsTs=ts; } else { delete w.obs; delete w.obsTs; } }
   w.ts=ts;
@@ -501,7 +534,7 @@ function viewList(){
   const opt=(v,t,c)=>`<option value="${esc(v)}" ${c===v?'selected':''}>${esc(t)}</option>`;
   const lotes=[...new Set(order.map(i=>loteNow(animals.get(i))))].sort();
   const eas=[...new Set(order.map(i=>eaNow(animals.get(i))))].sort();
-  const seg=`<div class="seg"><button data-lv="anim" class="${L.vista!=='mov'?'on':''}">Animales</button><button data-lv="mov" class="${L.vista==='mov'?'on':''}">Resumen de movimientos</button></div>`;
+  const seg=`<div class="seg"><button data-lv="mov" class="${L.vista==='mov'?'on':''}">Resumen de movimientos</button><button data-lv="anim" class="${L.vista!=='mov'?'on':''}">Animales</button></div>`;
   if(L.vista==='mov') return seg+viewMov();
   return `${seg}${statsList()}<div class="filters">
   <input data-l="q" placeholder="Buscar número o chapeta" value="${esc(L.q)}" autocomplete="off">
@@ -526,15 +559,21 @@ function movResumen(){
   return [...g.values()].sort((x,y)=>x.de.localeCompare(y.de,'es')||y.n-x.n||x.a.localeCompare(y.a,'es'));
 }
 const motTxt = r => MOTIVOS.filter(m=>r.mot[m]).map(m=>`${m==='Movimiento'?'Manual':m} ${r.mot[m]}`).join(' · ');
+/* Cuántos había en cada lote al cargar el Excel y cuántos hay ahora */
+function conteoLotes(){
+  const ini={}, hoy={};
+  for(const id of order){ const a=animals.get(id); ini[a.lote]=(ini[a.lote]||0)+1; const l=loteNow(a); hoy[l]=(hoy[l]||0)+1; }
+  return {ini,hoy};
+}
 function viewMov(){
-  movRows=movResumen(); const tot=movRows.reduce((s,r)=>s+r.n,0);
+  movRows=movResumen(); const {ini,hoy}=conteoLotes(); const tot=movRows.reduce((s,r)=>s+r.n,0);
   if(!movRows.length) return '<p class="hint">Aún no se ha movido ningún animal de lote.</p>';
   const lotesO=new Set(movRows.map(r=>r.de)).size, lotesD=new Set(movRows.map(r=>r.a)).size;
   return `<div class="stats" style="grid-template-columns:repeat(3,1fr)"><div><b>${tot}</b><small>Animales movidos</small></div><div><b>${lotesO}</b><small>Lotes de origen</small></div><div><b>${lotesD}</b><small>Lotes de destino</small></div></div>
-  <table class="mtab"><thead><tr><th>Lote origen</th><th></th><th>Lote destino</th><th class="n">Animales</th></tr></thead><tbody>
-  ${movRows.map((r,i)=>`<tr data-mv="${i}"><td><b>${esc(r.de)}</b></td><td class="ar">→</td><td><b>${esc(r.a)}</b><small>${esc(motTxt(r))}</small></td><td class="n">${r.n}</td></tr>`).join('')}
-  </tbody><tfoot><tr><td colspan="3">Total</td><td class="n">${tot}</td></tr></tfoot></table>
-  <p class="hint">Toque una fila para ver los animales. Cuenta el último movimiento de cada animal, desde el lote con que se cargó el Excel.</p>`;
+  <table class="mtab"><thead><tr><th>Lote origen</th><th></th><th>Lote destino</th><th class="n">Movidos</th><th class="n">Quedan en origen</th></tr></thead><tbody>
+  ${movRows.map((r,i)=>`<tr data-mv="${i}"><td><b>${esc(r.de)}</b></td><td class="ar">→</td><td><b>${esc(r.a)}</b><small>${esc(motTxt(r))}</small></td><td class="n">${r.n}</td><td class="n">${hoy[r.de]||0}<small>de ${ini[r.de]||0}</small></td></tr>`).join('')}
+  </tbody><tfoot><tr><td colspan="3">Total</td><td class="n">${tot}</td><td></td></tr></tfoot></table>
+  <p class="hint">Toque una fila para ver los animales. Cuenta el último movimiento de cada animal, desde el lote con que se cargó el Excel. "Quedan en origen" son los animales que hay hoy en ese lote, de los que tenía al cargar.</p>`;
 }
 function verMov(i){
   const r=movRows[i]; if(!r) return;
@@ -623,9 +662,9 @@ function construirExcel(){
   hoja(wb,'Entores',['Número','I.E.','Peso','Lote anterior','Lote destino','EA nuevo','Fecha','Hora'],E);
   hoja(wb,'Destetes',['Madre','Cría','Sexo cría','Edad meses','Color','Destetada','Peso destete','Destino','Número nuevo','Lote cría','Lote madre','Fecha','Hora'],D);
   hoja(wb,'Movimientos',['Número','Lote anterior','Lote nuevo','Motivo','Fecha','Hora'],M);
-  const RM=movResumen().map(r=>[r.de,r.a,r.mot.Movimiento||0,r.mot.Entore||0,r.mot.Destete||0,r.n]);
-  if(RM.length) RM.push(['TOTAL','',...[2,3,4,5].map(c=>RM.reduce((s,r)=>s+r[c],0))]);
-  hoja(wb,'Resumen movimientos',['Lote origen','Lote destino','Movimiento manual','Entore','Destete','Total animales'],RM);
+  const CL=conteoLotes(), RM=movResumen().map(r=>[r.de,r.a,r.mot.Movimiento||0,r.mot.Entore||0,r.mot.Destete||0,r.n,CL.ini[r.de]||0,CL.hoy[r.de]||0]);
+  if(RM.length) RM.push(['TOTAL','',...[2,3,4,5].map(c=>RM.reduce((s,r)=>s+r[c],0)),'','']);
+  hoja(wb,'Resumen movimientos',['Lote origen','Lote destino','Movimiento manual','Entore','Destete','Total animales','Había en origen','Quedan en origen'],RM);
   hoja(wb,'Observaciones',['Número','Lote','Observación','Fecha','Hora'],O);
   const m={...meta,order:undefined,cambios:0};
   const bk=XLSX.utils.aoa_to_sheet([['APP_CORRAL',1,order.length],['META',JSON.stringify(m)],...all.map(a=>[a.id,JSON.stringify(a)])]);
@@ -746,7 +785,7 @@ document.addEventListener('click',async e=>{
   if(!e.target.closest('#toast')) $('#toast').classList.remove('show');
   const t=e.target.closest('button,[data-a],[data-mv]'); if(!t) return;
   const d=t.dataset;
-  if(d.tab){ if(!meta&&d.tab!=='file') return; tab=d.tab; $('#main').scrollTop=0; return render(); }
+  if(d.tab){ if(!meta&&d.tab!=='file') return; if(d.tab!==tab&&!await salir()) return; tab=d.tab; $('#main').scrollTop=0; return render(); }
   if(d.k!==undefined){
     const f=F[tab];
     if(d.k==='del') f.q=(f.q||'').slice(0,-1);
@@ -756,23 +795,24 @@ document.addEventListener('click',async e=>{
     $('#q').value=f.q; return pintarResultados();
   }
   if(d.pick) return pick(d.pick);
-  if(d.pinv){ const id=d.pinv; closeModal(); tab='inv'; F.inv={}; render(); return pick(id); }
+  if(d.pinv){ const id=d.pinv; closeModal(); if(!await salir()) return; tab='inv'; F.inv={}; render(); return pick(id); }
   if(d.pseg){ pSeg=d.pseg; return abrirProg(); }
   if(d.lv){ L.vista=d.lv; $('#main').scrollTop=0; return renderMain(); }
   if(d.mv!==undefined) return verMov(+d.mv);
   if(d.open) return detalle(d.det);
   if(d.del) { return borrar(d.del,d.id); }
-  if(d.go){ closeModal(); tab=d.go; F[tab]={}; render(); return pick(d.id); }
+  if(d.go){ closeModal(); if(!await salir()) return; tab=d.go; F[tab]={}; render(); return pick(d.id); }
   const P=F.palp;
   if(d.modo){ if(P.modo!==d.modo){ P.modo=d.modo; if(d.modo!=='V') P.det=''; if(d.modo!=='P'){P.dias=null;P.manual='';} } return renderMain(); }
   if(d.dias){ P.dias=+d.dias; P.manual=''; return renderMain(); }
   if(d.det&&!d.open){ P.det=d.det; return renderMain(); }
   if(d.dec){ F.dest.dec=d.dec; return renderMain(); }
   if(d.dst){ F.dest.dst=d.dst; return renderMain(); }
+  if(d.qmov){ F[tab].mov=F[tab].mov===d.qmov?'':d.qmov; return renderMain(); }
   if(d.cria){ cargarDest(d.cria); return renderMain(); }
   switch(d.a){
-    case 'goFile': tab='file'; return render();
-    case 'clear': F[tab]={}; return renderMain();
+    case 'goFile': if(!await salir()) return; tab='file'; return render();
+    case 'clear': if(!await salir()) return; F[tab]={}; return renderMain();
     case 'toInv': { const id=F[tab].id; F[tab]={}; tab='inv'; render(); return pick(id); }
     case 'toggleInv': F[tab].inv=!F[tab].inv; return renderMain();
     case 'toggleEntore': F.peso.entore=!F.peso.entore; return renderMain();
@@ -817,7 +857,7 @@ document.addEventListener('change',e=>{
 });
 $('#file').addEventListener('change',e=>{ const f=e.target.files[0]; e.target.value=''; if(f) alSubir(f); });
 window.addEventListener('beforeinstallprompt',e=>{ e.preventDefault(); installEvt=e; if(tab==='file') renderMain(); });
-window.addEventListener('beforeunload',e=>{ if(meta&&(meta.cambios||0)>0){ e.preventDefault(); e.returnValue=''; } });
+window.addEventListener('beforeunload',e=>{ if(meta&&((meta.cambios||0)>0||sinGuardar())){ e.preventDefault(); e.returnValue=''; } });
 
 (async function init(){
   if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});

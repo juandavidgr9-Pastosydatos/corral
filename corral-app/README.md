@@ -11,3 +11,8 @@ App instalable (PWA) para registrar datos en corral sin internet. Los datos vive
 - Se adapta a tablet (Huawei MatePad 2000x1200 y similares), en vertical y horizontal. En horizontal muestra dos columnas.
 - Inventario: reloj de progreso con filtros por lote, categoría, sexo y estado reproductivo (datos con que se cargó el Excel). Al tocarlo muestra los que faltan y los que ya pasaron.
 - Listado → Resumen de movimientos: animales por lote de origen → lote de destino. También sale en la hoja "Resumen movimientos" del Excel.
+
+## Versión 3.0.0
+- Aviso "No ha guardado" al cambiar de pestaña, tocar "Otro animal" o abrir otro animal con datos sin guardar (Guardar ahora / Volver / Salir sin guardar).
+- Mover rápido: botones con los últimos lotes de destino (primero los usados desde el mismo lote).
+- La pestaña Listado se llama Movimientos y abre en el resumen. El resumen muestra cuántos animales quedan en el lote de origen (también en el Excel).
