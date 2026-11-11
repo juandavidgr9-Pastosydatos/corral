@@ -1,6 +1,6 @@
 'use strict';
 /* Corral - recolector de datos. Todo vive en el celular (IndexedDB). */
-const VERSION = '3.0.0';
+const VERSION = '4.0.0';
 const BACKUP_SHEET = '_respaldo';
 const CFG = {
   hlMin: 80, hlMax: 350, entoreMin: 295, destMin: 80, destMax: 190,
@@ -24,6 +24,7 @@ let meta = null, animals = new Map(), order = [], crias = new Map();
 let tab = 'inv', F = {inv:{}, palp:{}, peso:{}, dest:{}};
 let L = {q:'',sexo:'',lote:'',ea:'',repro:'',inv:'',reg:'',vista:'mov'};
 /* Filtros del reloj de inventario: usan los datos con que se cargó el Excel */
+let TL = 'actual';  // tabla por lote: 'inicial' | 'actual'
 let P = {lote:'',ea:'',sexo:'',repro:''}, pSeg = 'faltan', progOpen = false, movRows = [];
 let db, installEvt = null, persisted = null;
 
@@ -180,7 +181,7 @@ function viewSearch(){
   <div class="keys">${[1,2,3,4,5,6,7,8,9].map(n=>`<button data-k="${n}">${n}</button>`).join('')}
     <button data-k="-">-</button><button data-k="0">0</button><button class="k2" data-k="del" aria-label="Borrar">⌫</button>
     <button class="k2" data-k="abc">${f.abc?'123':'ABC'}</button><button class="go" data-k="ok">Buscar</button></div></div>
-  <div class="pane pr"><div class="results" id="res"></div>${tab==='inv'?progHTML():''}</div>`;
+  <div class="pane pr"><div class="results" id="res"></div>${tab==='inv'?progHTML()+`<button class="tlbtn" data-a="tlotes">Inventario por lote y estado</button><div class="tlwrap">${tablaLotesHTML()}</div>`:''}</div>`;
 }
 
 /* ---------- reloj de progreso del inventario ---------- */
@@ -213,6 +214,38 @@ function progHTML(){
   return `<div class="prog full"><button class="ringbtn" data-a="prog">${ringSVG(ok,b.length)}<div class="ptxt"><b>${ok} de ${b.length} inventariados</b>
   <small><span class="ok">${ok} pasaron</span> · <span class="no">${f} faltan</span></small><small>${esc(filtroTxt())}</small></div><span class="pgo">${f?'Ver faltan':'Ver lista'}</span></button>
   <div class="pfilt">${filtSelects()}</div></div>`;
+}
+/* ---- tabla de inventario por lote x estado animal (EA) ---- */
+const EA_ORD = ['VP','VS','NV','HL','CH','CM','ML','TR'];
+function tablaLotes(modo){
+  const t={}, eas=new Set(), ini={};
+  for(const id of order){ const a=animals.get(id);
+    const l=modo==='inicial'?a.lote:loteNow(a), e=modo==='inicial'?a.ea:eaNow(a);
+    eas.add(e); (t[l]=t[l]||{})[e]=(t[l][e]||0)+1;
+    ini[a.lote]=(ini[a.lote]||0)+1;
+  }
+  const cols=[...eas].sort((x,y)=>(EA_ORD.indexOf(x)+1||99)-(EA_ORD.indexOf(y)+1||99)||x.localeCompare(y));
+  const lotes=Object.keys(t).sort((x,y)=>x.localeCompare(y,'es'));
+  return {t,cols,lotes,ini};
+}
+function tablaLotesHTML(){
+  const {t,cols,lotes,ini}=tablaLotes(TL), base=TL==='actual'?tablaLotes('inicial').t:null;
+  const tot=l=>cols.reduce((s,c)=>s+(t[l][c]||0),0);
+  const colTot=c=>lotes.reduce((s,l)=>s+(t[l][c]||0),0);
+  const celda=(l,c)=>{ const v=t[l][c]||0, b=base?((base[l]||{})[c]||0):v;
+    return `<td class="${v!==b?'chg':''} ${v?'':'z'}">${v||'·'}</td>`; };
+  const dif=l=>{ if(!base) return ''; const d=tot(l)-(ini[l]||0); return d?`<small class="${d>0?'up':'dn'}">${d>0?'+':'−'}${Math.abs(d)}</small>`:''; };
+  const N=order.length;
+  return `<div class="tlhead"><b>Inventario por lote</b><div class="seg sm"><button data-tl="inicial" class="${TL==='inicial'?'on':''}">Inicial</button><button data-tl="actual" class="${TL==='actual'?'on':''}">Actual</button></div></div>
+  <p class="hint tlnote">${TL==='inicial'?'Como se cargó el Excel, antes de cualquier cambio.':'Con los movimientos, entores y destetes registrados. En azul lo que cambió; ± frente al inicial.'}</p>
+  <div class="tlscroll"><table class="tlot"><thead><tr><th class="lt">Lote</th>${cols.map(c=>`<th title="${esc(EA_TXT[c]||c)}">${esc(c)}</th>`).join('')}<th class="tt">Total</th></tr></thead>
+  <tbody>${lotes.map(l=>`<tr><td class="lt">${esc(l)}</td>${cols.map(c=>celda(l,c)).join('')}<td class="tt">${tot(l)}${dif(l)}</td></tr>`).join('')}</tbody>
+  <tfoot><tr><td class="lt">Total</td>${cols.map(c=>`<td>${colTot(c)}</td>`).join('')}<td class="tt">${N}</td></tr></tfoot></table></div>
+  <p class="hint tlnote">${cols.map(c=>`${c}: ${EA_TXT[c]||c}`).join(' · ')}</p>`;
+}
+function abrirTabla(){
+  modal(`<div class="chead"><div class="num" style="font-size:calc(24px*var(--k))">Inventario por lote</div><button class="close" data-a="closeM">Cerrar</button></div>
+  <div class="tlwrap open">${tablaLotesHTML()}</div>`);
 }
 function abrirProg(){
   const b=progBase(), hechos=b.filter(a=>a.w.inv), faltan=b.filter(a=>!a.w.inv);
@@ -664,6 +697,12 @@ function construirExcel(){
   hoja(wb,'Movimientos',['Número','Lote anterior','Lote nuevo','Motivo','Fecha','Hora'],M);
   const CL=conteoLotes(), RM=movResumen().map(r=>[r.de,r.a,r.mot.Movimiento||0,r.mot.Entore||0,r.mot.Destete||0,r.n,CL.ini[r.de]||0,CL.hoy[r.de]||0]);
   if(RM.length) RM.push(['TOTAL','',...[2,3,4,5].map(c=>RM.reduce((s,r)=>s+r[c],0)),'','']);
+  for(const [modo,nom] of [['inicial','Inv. lote inicial'],['actual','Inv. lote actual']]){
+    const {t,cols,lotes}=tablaLotes(modo);
+    const rows=lotes.map(l=>{ const v=cols.map(c=>t[l][c]||0); return [l,...v,v.reduce((a,b)=>a+b,0)]; });
+    rows.push(['TOTAL',...cols.map((c,i)=>rows.reduce((s,r)=>s+r[i+1],0)),order.length]);
+    hoja(wb,nom,['Lote',...cols,'Total'],rows);
+  }
   hoja(wb,'Resumen movimientos',['Lote origen','Lote destino','Movimiento manual','Entore','Destete','Total animales','Había en origen','Quedan en origen'],RM);
   hoja(wb,'Observaciones',['Número','Lote','Observación','Fecha','Hora'],O);
   const m={...meta,order:undefined,cambios:0};
@@ -808,6 +847,7 @@ document.addEventListener('click',async e=>{
   if(d.det&&!d.open){ P.det=d.det; return renderMain(); }
   if(d.dec){ F.dest.dec=d.dec; return renderMain(); }
   if(d.dst){ F.dest.dst=d.dst; return renderMain(); }
+  if(d.tl){ TL=d.tl; if($('#modal .tlwrap.open')) abrirTabla(); return renderMain(); }
   if(d.qmov){ F[tab].mov=F[tab].mov===d.qmov?'':d.qmov; return renderMain(); }
   if(d.cria){ cargarDest(d.cria); return renderMain(); }
   switch(d.a){
@@ -822,6 +862,7 @@ document.addEventListener('click',async e=>{
     case 'saveDest': return saveDest();
     case 'closeM': return closeModal();
     case 'prog': return abrirProg();
+    case 'tlotes': return abrirTabla();
     case 'upload': return $('#file').click();
     case 'download': return descargar();
     case 'share': return enviar();

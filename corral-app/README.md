@@ -16,3 +16,8 @@ App instalable (PWA) para registrar datos en corral sin internet. Los datos vive
 - Aviso "No ha guardado" al cambiar de pestaña, tocar "Otro animal" o abrir otro animal con datos sin guardar (Guardar ahora / Volver / Salir sin guardar).
 - Mover rápido: botones con los últimos lotes de destino (primero los usados desde el mismo lote).
 - La pestaña Listado se llama Movimientos y abre en el resumen. El resumen muestra cuántos animales quedan en el lote de origen (también en el Excel).
+
+## Versión 4.0.0
+- Inventario: tabla "Inventario por lote" (filas = lotes, columnas = estado animal EA, total). Botones Inicial (como se cargó el Excel) y Actual (con movimientos, entores y destetes; lo que cambió va en azul y el total muestra ± frente al inicial).
+- En tablet horizontal la tabla aparece debajo del reloj; en celular y tablet vertical se abre con el botón "Inventario por lote y estado".
+- El Excel trae las hojas "Inv. lote inicial" e "Inv. lote actual".
