@@ -1,16 +1,17 @@
 // Guarda la app en el celular para que abra sin internet.
 // Los datos de los animales NO pasan por aquí: viven en IndexedDB.
-const CACHE = 'corral-v4.0.0';
+const CACHE = 'corral-v4.0.1';
 const FILES = ['./', './index.html', './app.js', './styles.css', './vendor/xlsx.mini.min.js',
   './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES.map(f => new Request(f, {cache: 'reload'})))  /* siempre del servidor, nunca de la caché del navegador */).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys()
     .then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
+self.addEventListener('message', e => { if (e.data === 'skip') self.skipWaiting(); });
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   e.respondWith(

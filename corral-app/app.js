@@ -1,6 +1,6 @@
 'use strict';
 /* Corral - recolector de datos. Todo vive en el celular (IndexedDB). */
-const VERSION = '4.0.0';
+const VERSION = '4.0.1';
 const BACKUP_SHEET = '_respaldo';
 const CFG = {
   hlMin: 80, hlMax: 350, entoreMin: 295, destMin: 80, destMax: 190,
@@ -901,7 +901,19 @@ window.addEventListener('beforeinstallprompt',e=>{ e.preventDefault(); installEv
 window.addEventListener('beforeunload',e=>{ if(meta&&((meta.cambios||0)>0||sinGuardar())){ e.preventDefault(); e.returnValue=''; } });
 
 (async function init(){
-  if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+  if('serviceWorker' in navigator){
+    /* Actualización automática: busca versión nueva al abrir y al volver a la app; cuando la instala, recarga una vez */
+    const tenia=!!navigator.serviceWorker.controller; let recargado=false;
+    navigator.serviceWorker.addEventListener('controllerchange',()=>{
+      if(!tenia||recargado) return; recargado=true;
+      if(sinGuardar()){ toast('Hay una versión nueva. Guarde y vuelva a abrir la app.'); return; }
+      location.reload();
+    });
+    navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).then(reg=>{
+      const buscar=()=>{ if(navigator.onLine) reg.update().catch(()=>{}); };
+      buscar(); document.addEventListener('visibilitychange',()=>{ if(!document.hidden) buscar(); });
+    }).catch(()=>{});
+  }
   try{ db=await openDB(); await loadDB(); }
   catch(e){ await alertBox('Error de almacenamiento','Este navegador no permite guardar datos. Salga del modo privado o use otro navegador.'); }
   if(meta) await pedirPersistencia();

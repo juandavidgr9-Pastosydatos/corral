@@ -21,3 +21,7 @@ App instalable (PWA) para registrar datos en corral sin internet. Los datos vive
 - Inventario: tabla "Inventario por lote" (filas = lotes, columnas = estado animal EA, total). Botones Inicial (como se cargó el Excel) y Actual (con movimientos, entores y destetes; lo que cambió va en azul y el total muestra ± frente al inicial).
 - En tablet horizontal la tabla aparece debajo del reloj; en celular y tablet vertical se abre con el botón "Inventario por lote y estado".
 - El Excel trae las hojas "Inv. lote inicial" e "Inv. lote actual".
+
+## Versión 4.0.1
+- Actualización automática: al abrir la app (o volver a ella) con internet busca la versión nueva y se recarga sola. Si hay datos sin guardar, avisa en vez de recargar.
+- Los archivos de la app se descargan siempre del servidor al actualizar (evita quedarse con archivos viejos).
