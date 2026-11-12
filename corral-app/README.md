@@ -25,3 +25,6 @@ App instalable (PWA) para registrar datos en corral sin internet. Los datos vive
 ## Versión 4.0.1
 - Actualización automática: al abrir la app (o volver a ella) con internet busca la versión nueva y se recarga sola. Si hay datos sin guardar, avisa en vez de recargar.
 - Los archivos de la app se descargan siempre del servidor al actualizar (evita quedarse con archivos viejos).
+
+## Versión 4.0.2
+- Pesar: también se pesan machos de levante (ML), con rango de 80 a 500 kg. El botón ENTORE sigue solo para hembras de levante.

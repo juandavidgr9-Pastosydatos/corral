@@ -1,14 +1,16 @@
 'use strict';
 /* Corral - recolector de datos. Todo vive en el celular (IndexedDB). */
-const VERSION = '4.0.1';
+const VERSION = '4.0.2';
 const BACKUP_SHEET = '_respaldo';
 const CFG = {
-  hlMin: 80, hlMax: 350, entoreMin: 295, destMin: 80, destMax: 190,
+  hlMin: 80, hlMax: 350, mlMin: 80, mlMax: 500, entoreMin: 295, destMin: 80, destMax: 190,
   gmdMin: -200, gmdMax: 900, gestRevisar: 300, recordarCada: 25,
   loteDestete: 'DESTETE', loteVenta: 'VENTA', loteEntore: 'VACÍAS SARDINA'
 };
 const OVARIOS = ['OE','FOD','FOI','CLD','CLI','QUISTE OD','QUISTE OI','ENDOMETRITIS','PIOMETRA','CELO','PP','RP','DESCARTE'];
 const DIAS = [28,30,35,40,45,50,55,60,65,70,75,80,85,90];
+const PESABLES = ['HL','ML'];   // categorías que se pesan
+const rangoPeso = a => a.ea==='ML' ? [CFG.mlMin,CFG.mlMax] : [CFG.hlMin,CFG.hlMax];
 const EA_TXT = {VP:'Vaca Parida',VS:'Vaca Seca',NV:'Novilla Vientre',HL:'Hembra Levante',CH:'Cría Hembra',CM:'Cría Macho',TR:'Toro',ML:'Macho Levante'};
 const TABS = [
   ['inv','Inventario','<path d="M9 5h11M9 12h11M9 19h11"/><path d="M3 5l1.5 1.5L7 4M3 12l1.5 1.5L7 11M3 19l1.5 1.5L7 18"/>'],
@@ -427,7 +429,8 @@ async function savePalp(){
 function calcPeso(a,val){
   const r={alertas:[]}; const p=parseFloat(String(val).replace(',','.')); if(!Number.isFinite(p)||p<=0) return r;
   r.peso=p;
-  if(p<CFG.hlMin||p>CFG.hlMax) r.alertas.push({n:'r',t:`Peso fuera del rango (${CFG.hlMin} a ${CFG.hlMax} kg): posible error de digitación.`});
+  const [mn,mx]=rangoPeso(a);
+  if(p<mn||p>mx) r.alertas.push({n:'r',t:`Peso fuera del rango (${mn} a ${mx} kg): posible error de digitación.`});
   if(a.upeso>0&&a.fupeso){
     r.dias=daysBetween(a.fupeso,today());
     if(r.dias>0){
@@ -443,7 +446,7 @@ function livePeso(a,f){
   if(c.peso){
     h+=c.gmd!==undefined?`<div class="calc"><div><b>${num(c.gmd,0)}</b><small>g/día en ${c.dias} días</small></div><div><b>${num(c.kgmes)}</b><small>kg/mes</small></div></div>`:`<div class="alert b">Sin peso anterior para calcular GMD.</div>`;
     h+=c.alertas.map(x=>`<div class="alert ${x.n}">${esc(x.t)}</div>`).join('');
-    if(c.peso>CFG.entoreMin){
+    if(a.ea==='HL'&&c.peso>CFG.entoreMin){
       const ls=meta.lotes.map(l=>`<option ${f.loteEnt===l?'selected':''}>${esc(l)}</option>`).join('');
       h+=`<button class="switch ${f.entore?'on':''}" data-a="toggleEntore"><span>ENTORE: pasa a toro</span><i></i></button>`;
       if(f.entore) h+=`<div class="field"><label for="fEnt">Lote destino</label><select id="fEnt" data-f="loteEnt">${ls}<option value="__otro">Otro lote…</option></select></div>`;
@@ -453,7 +456,7 @@ function livePeso(a,f){
 }
 function viewPeso(a){
   const f=F.peso;
-  if(a.ea!=='HL') return `<div class="card">${head(a)}${kv([['Color',colorTxt(a)],['Lote',loteNow(a)]])}</div><div class="alert a">Solo se pesan las hembras de levante.</div><button class="big sec" data-a="toInv">Ir a inventario manual</button>`;
+  if(!PESABLES.includes(a.ea)) return `<div class="card">${head(a)}${kv([['Color',colorTxt(a)],['Lote',loteNow(a)]])}</div><div class="alert a">Solo se pesan hembras de levante (HL) y machos de levante (ML).</div><button class="big sec" data-a="toInv">Ir a inventario manual</button>`;
   return `<div class="card">${head(a)}${kv([['Color',colorTxt(a)],['Lote',loteNow(a)],['Edad',`${num(mesesNow(a))} meses`],['Fecha último peso',fmtD(a.fupeso)],['Último peso',a.upeso?`${num(a.upeso)} kg`:'—'],['GMD anterior',gmdLabel(a)],['I.E.',ieTxt(a),true],comentLine(a)])}</div><!--R-->
   ${a.w.peso?'<div class="alert b">Ya tiene peso registrado. Puede corregirlo aquí.</div>':''}
   <div class="field"><label for="fPeso">Peso nuevo (kg)</label><input class="huge" id="fPeso" data-f="valor" inputmode="decimal" value="${esc(f.valor)}" placeholder="kg"></div>
@@ -465,7 +468,7 @@ async function savePeso(){
   const f=F.peso, a=animals.get(f.id), c=calcPeso(a,f.valor);
   if(!c.peso) return alertBox('Falta el peso','Digite el peso del animal.');
   if(c.alertas.some(x=>x.n==='r')&&!await confirmBox('Posible error de digitación',`${f.valor} kg. ${c.alertas.map(x=>x.t).join(' ')}`,'Guardar igual',false,'Corregir')) return;
-  const w=clone(a.w), ts=stamp(), ent=f.entore&&c.peso>CFG.entoreMin;
+  const w=clone(a.w), ts=stamp(), ent=a.ea==='HL'&&f.entore&&c.peso>CFG.entoreMin;
   w.peso={peso:c.peso,pesoAnt:a.upeso,fechaAnt:a.fupeso,dias:c.dias??null,gmd:c.gmd??null,kgmes:c.kgmes??null,alerta:c.alertas.map(x=>x.t).join(' '),ts};
   if(ent){ w.entore={lote:f.loteEnt,peso:c.peso,ts}; w.mov={de:a.lote,a:f.loteEnt,motivo:'Entore',ts}; }
   else if(w.entore){ delete w.entore; if(w.mov&&w.mov.motivo==='Entore') delete w.mov; }
@@ -627,7 +630,7 @@ function detalle(id){
   if(w.obs) rec('obs',`Observación: ${w.obs}`);
   const links=[`<button class="opt" data-go="inv" data-id="${esc(id)}">Inventario</button>`];
   if(puedePalpar(a)) links.push(`<button class="opt" data-go="palp" data-id="${esc(id)}">Palpar</button>`);
-  if(a.ea==='HL') links.push(`<button class="opt" data-go="peso" data-id="${esc(id)}">Pesar</button>`);
+  if(PESABLES.includes(a.ea)) links.push(`<button class="opt" data-go="peso" data-id="${esc(id)}">Pesar</button>`);
   if(crias.has(id)||esCria(a)) links.push(`<button class="opt" data-go="dest" data-id="${esc(id)}">Destete</button>`);
   modal(`<div class="chead"><div class="num">${esc(id)}</div><button class="close" data-a="closeM">Cerrar</button></div>
   ${kv([['EA',eaNow(a)],['Color',colorTxt(a)],['I.E.',ieTxt(a)],['Lote',loteNow(a)],['Estado reprod.',estadoNow(a)||'—'],estadoNow(a)==='Preñada'?['Gest.',`${gestNow(a)} días`]:null])}
