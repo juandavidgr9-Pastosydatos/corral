@@ -1,11 +1,11 @@
 'use strict';
 /* Corral - recolector de datos. Todo vive en el celular (IndexedDB). */
-const VERSION = '4.0.2';
+const VERSION = '5.2.0';
 const BACKUP_SHEET = '_respaldo';
 const CFG = {
   hlMin: 80, hlMax: 350, mlMin: 80, mlMax: 500, entoreMin: 295, destMin: 80, destMax: 190,
   gmdMin: -200, gmdMax: 900, gestRevisar: 300, recordarCada: 25,
-  loteDestete: 'DESTETE', loteVenta: 'VENTA', loteEntore: 'VACÍAS SARDINA'
+  loteDestete: 'DESTETE', loteSecado: 'SECADO', loteVenta: 'VENTA', loteEntore: 'VACÍAS SARDINA'
 };
 const OVARIOS = ['OE','FOD','FOI','CLD','CLI','QUISTE OD','QUISTE OI','ENDOMETRITIS','PIOMETRA','CELO','PP','RP','DESCARTE'];
 const DIAS = [28,30,35,40,45,50,55,60,65,70,75,80,85,90];
@@ -84,8 +84,10 @@ function buscar(qRaw){
 
 /* ---------- IndexedDB ---------- */
 function openDB(){ return new Promise((ok,no)=>{
-  const r=indexedDB.open('corral',1);
-  r.onupgradeneeded=()=>{ const d=r.result; d.createObjectStore('meta'); d.createObjectStore('animals',{keyPath:'id'}); };
+  const r=indexedDB.open('corral',2);
+  r.onupgradeneeded=()=>{ const d=r.result, has=n=>d.objectStoreNames.contains(n);
+    if(!has('meta')) d.createObjectStore('meta'); if(!has('animals')) d.createObjectStore('animals',{keyPath:'id'});
+    if(!has('fotos')) d.createObjectStore('fotos',{keyPath:'id'}); };
   r.onsuccess=()=>ok(r.result); r.onerror=()=>no(r.error);
 });}
 const txDone = t => new Promise((ok,no)=>{ t.oncomplete=ok; t.onerror=()=>no(t.error); t.onabort=()=>no(t.error); });
@@ -159,7 +161,8 @@ function renderTop(){
 function renderNav(){
   $('#nav').innerHTML=TABS.map(([k,t,ic])=>`<button data-tab="${k}" class="${k===tab?'on':''}"><svg viewBox="0 0 24 24" aria-hidden="true">${ic}</svg>${t}</button>`).join('');
 }
-function renderMain(){
+function renderMain(){ renderMain0(); pintarFotos(); }
+function renderMain0(){
   const m=$('#main');
   if(!meta && tab!=='file') tab='file';
   if(tab==='file'){ m.className='narrow'; m.innerHTML=viewFile(); }
@@ -174,16 +177,114 @@ function renderMain(){
 }
 /* En tablet horizontal: ficha del animal a la izquierda, formulario a la derecha */
 function paneles(h){ const i=h.indexOf('<!--R-->'); return i<0?`<div class="pane pr">${h}</div>`:`<div class="pane pl">${h.slice(0,i)}</div><div class="pane pr">${h.slice(i+8)}</div>`; }
+/* ---------- fotos (opcionales): una por animal, comprimidas y guardadas solo en este equipo ---------- */
+const FOTO_MAX=1280, FOTO_Q=0.72;
+let fotos=new Map(), fotoUrl=new Map(), fotoDest=null;
+const fotoNombre = id => { const f=fotos.get(id); return f?`${(meta.finca||'finca').replace(/[^\w-]+/g,'_')}_${String(id).replace(/[^\w-]+/g,'_')}_${f.ts.slice(0,10)}.jpg`:''; };
+const pesoMB = n => num(n/1048576,1)+' MB';
+async function cargarFotos(){
+  fotos=new Map(); if(!db.objectStoreNames.contains('fotos')) return;
+  await new Promise((ok,no)=>{ const c=db.transaction('fotos').objectStore('fotos').openCursor();
+    c.onsuccess=()=>{ const r=c.result; if(!r) return ok(); fotos.set(r.value.id,{ts:r.value.ts,size:r.value.blob.size}); r.continue(); }; c.onerror=()=>no(c.error); });
+}
+const fotoStore = (mode='readonly') => db.transaction('fotos',mode).objectStore('fotos');
+const reqP = r => new Promise((ok,no)=>{ r.onsuccess=()=>ok(r.result); r.onerror=()=>no(r.error); });
+function fotoHTML(id,esCriaDest){
+  const f=fotos.get(id), quien=esCriaDest?` de la cría ${esc(id)}`:'';
+  return `<details ${f?'open':''}><summary>Foto${f?quien:` (opcional)`}</summary><div class="inner">${f?
+    `<div class="foto"><button class="thumb" data-fver="${esc(id)}" aria-label="Ver foto"><img data-foto="${esc(id)}" alt=""></button>
+    <div class="fi"><small>Tomada ${fmtTs(f.ts)} ${f.ts.slice(11,16)}</small><button class="opt" data-a="foto" data-fid="${esc(id)}">📷 Cambiar foto</button></div></div>`:
+    `<button class="opt fbtn" data-a="foto" data-fid="${esc(id)}">📷 Tomar foto${quien}</button>`}</div></details>`;
+}
+async function urlFoto(id){
+  if(fotoUrl.has(id)) return fotoUrl.get(id);
+  const r=await reqP(fotoStore().get(id)); if(!r) return '';
+  const u=URL.createObjectURL(r.blob); fotoUrl.set(id,u); return u;
+}
+function pintarFotos(){ document.querySelectorAll('img[data-foto]:not([src])').forEach(async im=>{ const u=await urlFoto(im.dataset.foto); if(u) im.src=u; }); }
+function pedirFoto(id){
+  fotoDest=id; let inp=$('#fotoIn');
+  if(!inp){ inp=document.createElement('input'); inp.type='file'; inp.accept='image/*'; inp.setAttribute('capture','environment'); inp.id='fotoIn'; inp.hidden=true;
+    inp.addEventListener('change',()=>{ const f=inp.files[0]; inp.value=''; if(f&&fotoDest) guardarFoto(fotoDest,f); }); document.body.appendChild(inp); }
+  inp.click();
+}
+async function comprimir(file){
+  const url=URL.createObjectURL(file);
+  try{
+    const img=await new Promise((ok,no)=>{ const i=new Image(); i.onload=()=>ok(i); i.onerror=()=>no(new Error('img')); i.src=url; });
+    const k=Math.min(1,FOTO_MAX/Math.max(img.naturalWidth,img.naturalHeight)), c=document.createElement('canvas');
+    c.width=Math.round(img.naturalWidth*k); c.height=Math.round(img.naturalHeight*k);
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+    return await new Promise(ok=>c.toBlob(ok,'image/jpeg',FOTO_Q));
+  } finally { URL.revokeObjectURL(url); }
+}
+async function guardarFoto(id,file){
+  let blob; try{ blob=await comprimir(file); }catch(e){ return alertBox('No se pudo leer la foto','Intente tomarla de nuevo.'); }
+  const ts=stamp();
+  try{ const t=db.transaction('fotos','readwrite'); t.objectStore('fotos').put({id,blob,ts}); await txDone(t); }
+  catch(e){ return alertBox('No se pudo guardar la foto','El equipo no tiene espacio suficiente. Descargue las fotos y libere espacio.'); }
+  const viejo=fotoUrl.get(id); if(viejo){ URL.revokeObjectURL(viejo); fotoUrl.delete(id); }
+  const cambio=fotos.has(id); fotos.set(id,{ts,size:blob.size});
+  if($('#modal.show .bigfoto')) closeModal();
+  renderMain(); toast(`${cambio?'Foto cambiada':'Foto guardada'} ✓ ${id} (${num(blob.size/1024,0)} KB)`);
+}
+async function verFoto(id){
+  const u=await urlFoto(id), f=fotos.get(id); if(!u) return;
+  modal(`<div class="chead"><div class="num">📷 ${esc(id)}</div><button class="close" data-a="closeM">Cerrar</button></div>
+  <img class="bigfoto" src="${u}" alt="Foto de ${esc(id)}"><p class="hint">Tomada ${fmtTs(f.ts)} ${f.ts.slice(11,16)} · ${num(f.size/1024,0)} KB</p>
+  <button class="big" data-a="foto" data-fid="${esc(id)}">📷 Cambiar foto</button><button class="big danger" data-fdel="${esc(id)}">Borrar foto</button>`);
+}
+async function borrarFoto(id){
+  if(!await confirmBox('Borrar foto',`Se borrará la foto de ${id}.`,'Borrar',true)) return verFoto(id);
+  const t=db.transaction('fotos','readwrite'); t.objectStore('fotos').delete(id); await txDone(t);
+  const u=fotoUrl.get(id); if(u){ URL.revokeObjectURL(u); fotoUrl.delete(id); } fotos.delete(id);
+  closeModal(); renderMain(); toast('Foto borrada');
+}
+async function borrarTodasFotos(){
+  if(!db.objectStoreNames.contains('fotos')) return;
+  const t=db.transaction('fotos','readwrite'); t.objectStore('fotos').clear(); await txDone(t);
+  for(const u of fotoUrl.values()) URL.revokeObjectURL(u); fotoUrl.clear(); fotos.clear();
+}
+/* ZIP sin compresión (las JPG ya vienen comprimidas) */
+const CRC_T=(()=>{ const t=new Uint32Array(256); for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c=c&1?0xEDB88320^(c>>>1):c>>>1; t[n]=c>>>0; } return t; })();
+function crc32(u){ let c=0xFFFFFFFF; for(let i=0;i<u.length;i++) c=CRC_T[(c^u[i])&255]^(c>>>8); return (c^0xFFFFFFFF)>>>0; }
+function zipBlob(files){
+  const enc=new TextEncoder(), parts=[], cen=[]; let off=0;
+  for(const f of files){
+    const nm=enc.encode(f.name), d=f.data, crc=crc32(d), dt=new Date(f.ts.replace(' ','T'));
+    const tm=(dt.getHours()<<11)|(dt.getMinutes()<<5)|(dt.getSeconds()>>1), dd=((dt.getFullYear()-1980)<<9)|((dt.getMonth()+1)<<5)|dt.getDate();
+    const h=new DataView(new ArrayBuffer(30));
+    [[0,0x04034b50,4],[4,20,2],[6,0x0800,2],[8,0,2],[10,tm,2],[12,dd,2],[14,crc,4],[18,d.length,4],[22,d.length,4],[26,nm.length,2],[28,0,2]].forEach(([o,v,n])=>n===4?h.setUint32(o,v,true):h.setUint16(o,v,true));
+    const c=new DataView(new ArrayBuffer(46));
+    [[0,0x02014b50,4],[4,20,2],[6,20,2],[8,0x0800,2],[10,0,2],[12,tm,2],[14,dd,2],[16,crc,4],[20,d.length,4],[24,d.length,4],[28,nm.length,2],[30,0,2],[32,0,2],[34,0,2],[36,0,2],[38,0,4],[42,off,4]].forEach(([o,v,n])=>n===4?c.setUint32(o,v,true):c.setUint16(o,v,true));
+    parts.push(h,nm,d); cen.push(c,nm); off+=30+nm.length+d.length;
+  }
+  const cs=cen.reduce((s,x)=>s+x.byteLength,0), e=new DataView(new ArrayBuffer(22));
+  [[0,0x06054b50,4],[4,0,2],[6,0,2],[8,files.length,2],[10,files.length,2],[12,cs,4],[16,off,4],[20,0,2]].forEach(([o,v,n])=>n===4?e.setUint32(o,v,true):e.setUint16(o,v,true));
+  return new Blob([...parts,...cen,e],{type:'application/zip'});
+}
+async function descargarFotos(){
+  if(!fotos.size) return alertBox('Sin fotos','Aún no se ha tomado ninguna foto.');
+  toast('Preparando fotos…');
+  const todas=await reqP(fotoStore().getAll()), files=[];
+  for(const r of todas){ if(!fotos.has(r.id)) continue; files.push({name:fotoNombre(r.id),data:new Uint8Array(await r.blob.arrayBuffer()),ts:r.ts}); }
+  const blob=zipBlob(files), name=`${(meta.finca||'finca').replace(/[^\w-]+/g,'_')}_fotos_${today()}.zip`;
+  const ios=/iPhone|iPad|iPod/.test(navigator.userAgent), standalone=navigator.standalone||matchMedia('(display-mode: standalone)').matches;
+  const file=new File([blob],name,{type:'application/zip'});
+  if(ios&&standalone&&navigator.canShare&&navigator.canShare({files:[file]})){ try{ await navigator.share({files:[file],title:name}); }catch(e){} return; }
+  const url=URL.createObjectURL(blob), a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),60000); toast(`Fotos descargadas: ${files.length} (${pesoMB(blob.size)})`);
+}
 function renderNavLock(){ document.querySelectorAll('#nav button').forEach(b=>{ if(b.dataset.tab!=='file') b.style.opacity=.35; }); }
 
-const AYUDA={inv:'Número o chapeta del animal',palp:'Número o chapeta de la vaca',peso:'Número o chapeta del animal',dest:'Número de la vaca'};
+const AYUDA={inv:'Número o chapeta del animal',palp:'Número o chapeta de la vaca',peso:'Número o chapeta del animal',dest:'Número de la vaca o de la cría'};
 function viewSearch(){
   const f=F[tab]; const mode=f.abc?'':'readonly inputmode="none"';
   return `<div class="pane pl"><div class="searchbox"><input id="q" ${mode} autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="${AYUDA[tab]}" value="${esc(f.q||'')}"></div>
   <div class="keys">${[1,2,3,4,5,6,7,8,9].map(n=>`<button data-k="${n}">${n}</button>`).join('')}
     <button data-k="-">-</button><button data-k="0">0</button><button class="k2" data-k="del" aria-label="Borrar">⌫</button>
     <button class="k2" data-k="abc">${f.abc?'123':'ABC'}</button><button class="go" data-k="ok">Buscar</button></div></div>
-  <div class="pane pr"><div class="results" id="res"></div>${tab==='inv'?progHTML()+`<button class="tlbtn" data-a="tlotes">Inventario por lote y estado</button><div class="tlwrap">${tablaLotesHTML()}</div>`:''}</div>`;
+  <div class="pane pr"><div class="results" id="res"></div>${tab==='dest'?pendDestHTML():''}${tab==='inv'?progHTML()+`<button class="tlbtn" data-a="tlotes">Inventario por lote y estado</button><div class="tlwrap">${tablaLotesHTML()}</div>`:''}</div>`;
 }
 
 /* ---------- reloj de progreso del inventario ---------- */
@@ -276,11 +377,14 @@ function pick(id){
   if(tab==='dest'){
     let mid=id; if(esCria(a)&&a.madre&&animals.has(a.madre)) mid=a.madre;
     const m=animals.get(mid), cs=esCria(m)?[m.id]:(crias.get(mid)||[]);
-    F.dest={id:mid, criaId:cs[0]||null, inv:true};
-    if(cs[0]) cargarDest(cs[0]);
+    /* si buscó la cría, abre esa cría; si buscó la vaca, la primera cría sin decisión */
+    const cid=cs.includes(id)?id:(cs.find(i=>!animals.get(i).w.dest)||cs[0]||null);
+    F.dest={id:mid, criaId:cid, inv:true};
+    if(cid) cargarDest(cid);
   } else if(tab==='palp'){
     const p=a.w.palp;
-    F.palp={id, inv:a.w.inv!==false, modo:p?p.res:'', dias:p&&p.res==='P'?p.dias:null, det:p?p.det:'', manual:'', obs:a.w.obs||'', mov:''};
+    const pg=progPend(a);
+    F.palp={id, inv:a.w.inv!==false, modo:p?p.res:'', dias:p&&p.res==='P'?p.dias:null, det:p?p.det:'', manual:'', obs:a.w.obs||'', mov:pg?pg.a:''};
   } else if(tab==='peso'){
     const p=a.w.peso;
     F.peso={id, inv:a.w.inv!==false, valor:p?String(p.peso):'', entore:!!a.w.entore, loteEnt:a.w.entore?a.w.entore.lote:CFG.loteEntore, obs:a.w.obs||'', mov:''};
@@ -312,7 +416,7 @@ function salir(){
 }
 function cargarDest(cid){
   const c=animals.get(cid), d=c.w.dest, f=F.dest;
-  f.criaId=cid; f.dec=d?d.dec:''; f.peso=d&&d.peso?String(d.peso):''; f.dst=d?d.dst:''; f.nuevo=d?d.nuevo:'';
+  f.criaId=cid; f.inv=c.w.inv!==false; f.dec=d?d.dec:''; f.peso=d&&d.peso?String(d.peso):''; f.dst=d?d.dst:''; f.nuevo=d?d.nuevo:'';
   const m=animals.get(f.id); f.obs=m.w.obs||''; f.mov='';
   f._ini=snap(f);
 }
@@ -330,9 +434,10 @@ function comunes(a,f,opts={}){
   const sel=lotes.map(l=>`<option ${f.mov===l?'selected':''}>${esc(l)}</option>`).join('');
   const q=opts.noMov?[]:rapidos(a);
   const quick=q.length?`<div class="quick"><small>Mover rápido (últimos destinos)</small><div class="opts">${q.map(l=>`<button class="opt ${f.mov===l?'on':''}" data-qmov="${esc(l)}">→ ${esc(l)}</button>`).join('')}</div></div>`:'';
-  return `<button class="switch ${f.inv?'on':''}" data-a="toggleInv"><span>Inventariado</span><i></i></button>
+  return `<button class="switch ${f.inv?'on':''}" data-a="toggleInv"><span>${esc(opts.invTxt||'Inventariado')}</span><i></i></button>
   ${quick}${opts.noMov?'':`<details ${f.mov?'open':''}><summary>Mover de lote${f.mov?`: ${esc(f.mov)}`:''}</summary><div class="inner"><div class="field"><label for="fMov">Lote actual: ${esc(loteNow(a))}</label>
   <select id="fMov" data-f="mov"><option value="">Sin mover</option>${sel}<option value="__otro">Otro lote…</option></select></div></div></details>`}
+  ${fotoHTML(opts.fotoId||a.id,!!opts.fotoId)}
   <details ${f.obs?'open':''}><summary>Observación</summary><div class="inner"><div class="field"><textarea data-f="obs" aria-label="Observación" placeholder="Opcional">${esc(f.obs||'')}</textarea></div></div></details>`;
 }
 
@@ -370,6 +475,17 @@ async function guardar(changes,msg){
 }
 
 /* ---- palpación ---- */
+/* Avisos de movimiento al palpar: madre destetada que va para SECADO y movimiento programado */
+function alertasMov(a){
+  let h='';
+  if(a.w.destMadre&&a.w.mov&&a.w.mov.motivo==='Destete')
+    h+=`<div class="alert r big"><b>SEPARAR → ${esc(a.w.mov.a)}</b><br>Se movió a ${esc(a.w.mov.a)} por destete de la cría ${esc(a.w.destMadre)} (${fmtTs(a.w.mov.ts)}).</div>`;
+  const pg=meta.prog&&meta.prog[a.id], e=pg&&progEstado(a);
+  if(pg&&e.k==='pend') h+=`<div class="alert a big"><b>MOVER A ${esc(pg.a)}</b><br>Movimiento programado el ${fmtTs(pg.ts)} con ${pg.gest} días de gestación. Ya está seleccionado abajo; si la palpación cambia el destino (vacía, descarte), cámbielo antes de guardar.</div>`;
+  else if(pg) h+=`<div class="alert b">Movimiento programado a ${esc(pg.a)}: ${esc(e.t)}.</div>`;
+  return h;
+}
+const fmtTs = ts => ts ? fmtD(ts.slice(0,10)) : '';
 function viewPalp(a){
   const f=F.palp;
   if(!puedePalpar(a)) return `<div class="card">${head(a)}${kv([['Color',colorTxt(a)],['Lote',loteNow(a)]])}</div><div class="alert a">Esta categoría no se palpa.</div><button class="big sec" data-a="toInv">Ir a inventario manual</button>`;
@@ -378,6 +494,7 @@ function viewPalp(a){
     estadoNow(a)==='Preñada'?['Gest.',`${g} días`]:null,['D.Ab',dabNow(a)],['UIEP',a.uiep],estadoNow(a)==='Vacía'?['Det. Ult. Tacto',detNow(a)||'Sin dato']:null,comentLine(a)];
   const bt=(k,t,c='')=>`<button class="opt ${c} ${f.modo===k?'on':''}" data-modo="${k}">${t}</button>`;
   let out=`<div class="card">${head(a)}${kv(items)}</div><!--R-->`;
+  out+=alertasMov(a);
   if(ya) out+=`<div class="alert b">Ya tiene palpación registrada. Puede corregirla aquí.</div>`;
   if(pren&&gestBaseNow(a)>=CFG.gestRevisar) out+=`<div class="alert a">Revisar: registra ${gestBaseNow(a)} días de gestación.</div>`;
   out+=`<div class="opts ${pren?'c3':''}">${pren?bt('C','Confirmar preñez')+bt('P','Cambiar días')+bt('V','Vacía','bad'):bt('P','Preñada')+bt('V','Vacía','bad')}</div>`;
@@ -421,7 +538,9 @@ async function savePalp(){
     p={res:'V',dias:0,det:f.det};
   }
   w.palp={...p,prev:a.estado,prevGest:gestBaseNow(a),alerta:alertas.join('; '),ts};
+  const pg=progPend(a);
   aplicarComunes(a,w,f,ts);
+  if(pg&&w.mov&&w.mov.ts===ts&&w.mov.a===pg.a) w.mov.motivo='Programado';
   await guardar([[a,w]],`${a.id}: ${p.res==='V'?'Vacía '+p.det:`Preñada ${p.dias} d`}`); F.palp={}; render();
 }
 
@@ -456,6 +575,7 @@ function livePeso(a,f){
 }
 function viewPeso(a){
   const f=F.peso;
+  if(esCria(a)) return `<div class="card">${head(a)}${kv([['Color',colorTxt(a)],['Lote',loteNow(a)]])}</div><div class="alert b">El peso de las crías se registra como peso al destete.</div><button class="big" data-go="dest" data-id="${esc(a.id)}">Ir a Destete con ${esc(a.id)}</button>`;
   if(!PESABLES.includes(a.ea)) return `<div class="card">${head(a)}${kv([['Color',colorTxt(a)],['Lote',loteNow(a)]])}</div><div class="alert a">Solo se pesan hembras de levante (HL) y machos de levante (ML).</div><button class="big sec" data-a="toInv">Ir a inventario manual</button>`;
   return `<div class="card">${head(a)}${kv([['Color',colorTxt(a)],['Lote',loteNow(a)],['Edad',`${num(mesesNow(a))} meses`],['Fecha último peso',fmtD(a.fupeso)],['Último peso',a.upeso?`${num(a.upeso)} kg`:'—'],['GMD anterior',gmdLabel(a)],['I.E.',ieTxt(a),true],comentLine(a)])}</div><!--R-->
   ${a.w.peso?'<div class="alert b">Ya tiene peso registrado. Puede corregirlo aquí.</div>':''}
@@ -484,17 +604,32 @@ function viewDest(a){
   const multi=list.length>1?`<div class="opts">${list.map(i=>`<button class="opt ${i===f.criaId?'on':''}" data-cria="${esc(i)}">${esc(i)}</button>`).join('')}</div>`:'';
   let h=`<div class="card">${head(a)}${esCria(a)?'':kv([['Color',colorTxt(a)],['Lote',loteNow(a)]])}</div>${multi}
   <div class="card"><h3>Cría</h3>${kv([['# de la cría',c.id],['Sexo cría',c.sexo==='H'?'Hembra':'Macho'],['Edad',`${num(mesesNow(c))} meses`],['Color',colorTxt(c)],c.az?['Chapeta','AZ '+c.az,true]:null,comentLine(c)])}</div><!--R-->
-  ${c.w.dest?'<div class="alert b">Ya tiene decisión registrada. Puede corregirla aquí.</div>':''}
+  ${c.w.dest?`<div class="alert b">Ya tiene decisión de destete registrada.${faltaDest(c).length?` <b>Falta: ${faltaDest(c).join(' y ')}.</b>`:''} Puede completarla o corregirla aquí.</div>`:''}
   <div class="opts"><button class="opt ${f.dec==='si'?'on':''}" data-dec="si">Destetar</button><button class="opt bad ${f.dec==='no'?'on':''}" data-dec="no">No destetar</button></div>`;
   if(f.dec==='si'){
-    h+=`<div class="field"><label for="fDP">Peso al destete (kg)</label><input class="huge" id="fDP" data-f="peso" inputmode="decimal" value="${esc(f.peso||'')}" placeholder="kg"></div><div id="live">${alertaDP(f)}</div>
+    h+=`<div class="field"><label for="fDP">Peso al destete (kg) · opcional, se puede poner después</label><input class="huge" id="fDP" data-f="peso" inputmode="decimal" value="${esc(f.peso||'')}" placeholder="kg"></div><div id="live">${alertaDP(f)}</div>
     <div class="opts"><button class="opt ${f.dst==='finca'?'on':''}" data-dst="finca">Queda en finca</button><button class="opt ${f.dst==='venta'?'on':''}" data-dst="venta">Venta</button></div>`;
-    if(f.dst==='finca') h+=`<div class="field"><label for="fNew">Número nuevo de la cría</label><input class="huge" id="fNew" data-f="nuevo" autocapitalize="characters" autocomplete="off" value="${esc(f.nuevo||'')}" placeholder="Número"></div><div class="alert g">Cría y madre pasan al lote ${CFG.loteDestete}.</div>`;
-    if(f.dst==='venta') h+=`<div class="alert g">La cría pasa al lote ${CFG.loteVenta} y la madre al lote ${CFG.loteDestete}.</div>`;
+    if(f.dst==='finca') h+=`<div class="field"><label for="fNew">Número nuevo de la cría · opcional, se pone al herrar</label><input class="huge" id="fNew" data-f="nuevo" autocapitalize="characters" autocomplete="off" value="${esc(f.nuevo||'')}" placeholder="Número"></div><div class="alert g">La cría pasa al lote ${CFG.loteDestete} y la madre al lote ${CFG.loteSecado}.</div>`;
+    if(f.dst==='venta') h+=`<div class="alert g">La cría pasa al lote ${CFG.loteVenta} y la madre al lote ${CFG.loteSecado}.</div>`;
   }
-  h+=comunes(a,f,{noMov:f.dec==='si'});
+  h+=comunes(a,f,{noMov:f.dec==='si',invTxt:`Cría ${c.id} inventariada`,fotoId:c.id});
+  if(!esCria(a)) h+=`<p class="hint" style="text-align:left;margin:0">La vaca ${esc(a.id)} no queda inventariada aquí: se inventaría al palparla.</p>`;
   h+=`<div class="savebar"><button class="big" data-a="saveDest">${c.w.dest?'Guardar corrección':'Guardar'}</button></div>`;
   return h;
+}
+/* Lo que le falta a una cría destetada: peso y, si queda en finca, número nuevo */
+function faltaDest(c){ const d=c.w.dest; if(!d||d.dec!=='si') return []; const r=[]; if(!d.peso) r.push('peso al destete'); if(d.dst==='finca'&&!d.nuevo) r.push('número nuevo'); return r; }
+const pendDest = k => order.map(i=>animals.get(i)).filter(c=>{ const d=c.w.dest; return d&&d.dec==='si'&&(k==='peso'?!d.peso:d.dst==='finca'&&!d.nuevo); });
+function pendDestHTML(){
+  const sp=pendDest('peso').length, sn=pendDest('num').length;
+  if(!sp&&!sn) return '';
+  return `<div class="pendd"><b>Destetes pendientes</b><div class="opts"><button class="opt" data-pd="peso" ${sp?'':'disabled'}>Sin peso: ${sp}</button><button class="opt" data-pd="num" ${sn?'':'disabled'}>Sin número nuevo: ${sn}</button></div></div>`;
+}
+function verPendDest(k){
+  const l=pendDest(k);
+  modal(`<div class="chead"><div class="num" style="font-size:calc(24px*var(--k))">${k==='peso'?'Destetes sin peso':'Sin número nuevo'}</div><button class="close" data-a="closeM">Cerrar</button></div>
+  <p class="hint">${l.length} crías. Toque una para completarla.</p>
+  <div class="plist">${l.map(c=>`<button class="res" data-go="dest" data-id="${esc(c.id)}"><b>${esc(c.id)}</b><span>Madre ${esc(c.w.dest.madre||'—')} · ${c.sexo==='H'?'Hembra':'Macho'} · ${esc(colorTxt(c))} · ${c.w.dest.dst==='venta'?'Venta':'Queda en finca'}${c.w.dest.peso?` · ${num(c.w.dest.peso)} kg`:''}</span></button>`).join('')}</div>`);
 }
 const alertaDP = f => { const p=parseFloat(String(f.peso||'').replace(',','.')); return Number.isFinite(p)&&(p<CFG.destMin||p>CFG.destMax)?`<div class="alert r">Peso fuera del rango (${CFG.destMin} a ${CFG.destMax} kg): posible error de digitación.</div>`:''; };
 async function saveDest(){
@@ -502,30 +637,30 @@ async function saveDest(){
   if(!f.dec) return alertBox('Falta la decisión','Seleccione Destetar o No destetar.');
   const ts=stamp(), wc=clone(c.w), same=m.id===c.id, wm=same?wc:clone(m.w);
   if(wc.dest&&wc.mov&&wc.mov.motivo==='Destete') delete wc.mov;
+  const madreMovidaDespues=!same&&wm.destMadre===c.id&&wm.mov&&wm.mov.motivo!=='Destete';
   if(!same&&wm.mov&&wm.mov.motivo==='Destete'&&wm.destMadre===c.id) delete wm.mov;
   if(f.dec==='si'){
     const p=parseFloat(String(f.peso||'').replace(',','.'));
-    if(!Number.isFinite(p)||p<=0){ if(!await confirmBox('Sin peso al destete','No digitó el peso al destete.','Guardar sin peso',false,'Digitar peso')) return; }
-    else if(p<CFG.destMin||p>CFG.destMax){ if(!await confirmBox('Posible error de digitación',`${f.peso} kg está fuera del rango de ${CFG.destMin} a ${CFG.destMax} kg.`,'Guardar igual',false,'Corregir')) return; }
+    if(Number.isFinite(p)&&p>0&&(p<CFG.destMin||p>CFG.destMax)){ if(!await confirmBox('Posible error de digitación',`${f.peso} kg está fuera del rango de ${CFG.destMin} a ${CFG.destMax} kg.`,'Guardar igual',false,'Corregir')) return; }
     if(!f.dst) return alertBox('Falta el destino','Seleccione Queda en finca o Venta.');
     const nuevo=(f.nuevo||'').trim().toUpperCase();
-    if(f.dst==='finca'){
-      if(!nuevo) return alertBox('Falta el número','Escriba el número nuevo de la cría.');
+    if(f.dst==='finca'&&nuevo){
       const usado=animals.has(nuevo)&&nuevo!==c.id||order.some(i=>i!==c.id&&animals.get(i).w.dest&&animals.get(i).w.dest.nuevo===nuevo);
       if(usado&&!await confirmBox('Número repetido',`El número ${nuevo} ya existe en esta finca.`,'Guardar igual',false,'Corregir')) return;
     }
     const lc=f.dst==='venta'?CFG.loteVenta:CFG.loteDestete;
     wc.dest={dec:'si',peso:Number.isFinite(p)&&p>0?p:null,dst:f.dst,nuevo:f.dst==='finca'?nuevo:'',lote:lc,madre:same?'':m.id,ts};
     wc.mov={de:c.lote,a:lc,motivo:'Destete',ts};
-    if(!same){ wm.destMadre=c.id; wm.mov={de:m.lote,a:CFG.loteDestete,motivo:'Destete',ts}; }
+    if(!same){ wm.destMadre=c.id; if(!madreMovidaDespues) wm.mov={de:m.lote,a:CFG.loteSecado,motivo:'Destete',ts}; }
   } else {
     wc.dest={dec:'no',peso:null,dst:'',nuevo:'',lote:'',madre:same?'':m.id,ts};
     if(!same) delete wm.destMadre;
   }
-  if(f.inv){ if(!wc.inv){ wc.inv=true; wc.invTs=ts; } }
+  if(f.inv!==!!wc.inv){ wc.inv=f.inv; wc.invTs=ts; }
   wc.ts=ts;
-  aplicarComunes(m,wm,f,ts,f.dec==='si');
-  await guardar(same?[[c,wc]]:[[c,wc],[m,wm]],`${c.id}: ${f.dec==='si'?(f.dst==='venta'?'destete, venta':'destete, queda en finca'):'no se desteta'}`);
+  aplicarComunes(m,wm,{...f,inv:!!wm.inv},ts,f.dec==='si');   // la vaca se inventaría al palparla, no en destete
+  const falta=faltaDest({w:wc});
+  await guardar(same?[[c,wc]]:[[c,wc],[m,wm]],`${c.id}: ${f.dec==='si'?(f.dst==='venta'?'destete, venta':'destete, queda en finca')+(falta.length?` (falta ${falta.join(' y ')})`:''):'no se desteta'}`);
   F.dest={}; render();
 }
 
@@ -545,6 +680,9 @@ function filtrar(){
     if(L.reg==='entore'&&!a.w.entore) return false;
     if(L.reg==='dest'&&!(a.w.dest&&a.w.dest.dec==='si')) return false;
     if(L.reg==='mov'&&!a.w.mov) return false;
+    if(L.reg==='dsp'&&!(a.w.dest&&a.w.dest.dec==='si'&&!a.w.dest.peso)) return false;
+    if(L.reg==='dsn'&&!(a.w.dest&&a.w.dest.dec==='si'&&a.w.dest.dst==='finca'&&!a.w.dest.nuevo)) return false;
+    if(L.reg==='prog'&&!(meta.prog&&meta.prog[a.id])) return false;
     if(L.reg==='alerta'&&!((a.w.palp&&a.w.palp.alerta)||(a.w.peso&&a.w.peso.alerta))) return false;
     if(q){ const n=norm(q); if(!(norm(a.id).startsWith(n)||(a.ie&&a.ie.slice(-5).startsWith(q))||(a.az&&stripZ(a.az)===n))) return false; }
     return true;
@@ -556,10 +694,12 @@ function rowHTML(a){
   if(w.palp) t.push(w.palp.res==='V'?`<span class="tag ${w.palp.alerta?'r':''}">Vacía ${esc(w.palp.det)}</span>`:`<span class="tag g">Preñada ${gestNow(a)} d</span>`);
   if(w.peso) t.push(`<span class="tag ${w.peso.alerta?'a':''}">${num(w.peso.peso)} kg</span>`);
   if(w.entore) t.push('<span class="tag b">Entore</span>');
-  if(w.dest) t.push(w.dest.dec==='si'?`<span class="tag b">Destete ${w.dest.dst==='venta'?'venta':'finca'}</span>`:'<span class="tag">No destetado</span>');
+  if(w.dest) t.push(w.dest.dec==='si'?`<span class="tag b">Destete ${w.dest.dst==='venta'?'venta':'finca'}${w.dest.nuevo?' · '+esc(w.dest.nuevo):''}</span>`+(faltaDest(a).length?`<span class="tag a">Falta ${faltaDest(a).join(' y ')}</span>`:''):'<span class="tag">No destetado</span>');
   if(w.destMadre) t.push(`<span class="tag b">Destetó ${esc(w.destMadre)}</span>`);
   if(w.mov) t.push(`<span class="tag b">→ ${esc(w.mov.a)}</span>`);
+  const pg=meta.prog&&meta.prog[a.id]; if(pg) t.push(`<span class="tag ${progEstado(a).k==='pend'?'a':'b'}">Prog. → ${esc(pg.a)}: ${esc(progEstado(a).t)}</span>`);
   if(w.obs) t.push('<span class="tag">Obs.</span>');
+  if(fotos.has(a.id)) t.push('<span class="tag">📷 Foto</span>');
   return `<button class="row ${w.inv?'done':''}" data-det="${esc(a.id)}" data-open="1"><div class="l1"><b>${esc(a.id)}</b><span>${esc(eaNow(a))} · ${esc(colorTxt(a))} · ${esc(loteNow(a))} · ${esc(estadoNow(a)||'')}</span></div>${t.length?`<div class="tags">${t.join('')}</div>`:''}</button>`;
 }
 function statsList(){
@@ -570,8 +710,9 @@ function viewList(){
   const opt=(v,t,c)=>`<option value="${esc(v)}" ${c===v?'selected':''}>${esc(t)}</option>`;
   const lotes=[...new Set(order.map(i=>loteNow(animals.get(i))))].sort();
   const eas=[...new Set(order.map(i=>eaNow(animals.get(i))))].sort();
-  const seg=`<div class="seg"><button data-lv="mov" class="${L.vista==='mov'?'on':''}">Resumen de movimientos</button><button data-lv="anim" class="${L.vista!=='mov'?'on':''}">Animales</button></div>`;
+  const seg=`<div class="seg c3"><button data-lv="mov" class="${L.vista==='mov'?'on':''}">Resumen</button><button data-lv="prog" class="${L.vista==='prog'?'on':''}">Programar movimientos</button><button data-lv="anim" class="${L.vista==='anim'?'on':''}">Animales</button></div>`;
   if(L.vista==='mov') return seg+viewMov();
+  if(L.vista==='prog') return seg+viewProgramar();
   return `${seg}${statsList()}<div class="filters">
   <input data-l="q" placeholder="Buscar número o chapeta" value="${esc(L.q)}" autocomplete="off">
   <select data-l="sexo" aria-label="Sexo">${opt('','Sexo: todos',L.sexo)+opt('H','Hembras',L.sexo)+opt('M','Machos',L.sexo)}</select>
@@ -579,12 +720,12 @@ function viewList(){
   <select data-l="ea" aria-label="Estado del animal">${opt('','Estado: todos',L.ea)+eas.map(e=>opt(e,`${e} ${EA_TXT[e]||''}`,L.ea)).join('')}</select>
   <select data-l="inv" aria-label="Inventario">${opt('','Inventario: todos',L.inv)+opt('si','Inventariados',L.inv)+opt('no','Sin inventariar',L.inv)}</select>
   <select data-l="repro" aria-label="Reproductivo">${opt('','Reprod.: todos',L.repro)+opt('Preñada','Preñadas',L.repro)+opt('Vacía','Vacías',L.repro)}</select>
-  <select data-l="reg" aria-label="Registros">${opt('','Registros: todos',L.reg)+opt('palp','Palpadas',L.reg)+opt('pren','Pasaron preñadas',L.reg)+opt('peso','Pesados',L.reg)+opt('entore','Entoradas',L.reg)+opt('dest','Destetados',L.reg)+opt('mov','Movidos',L.reg)+opt('alerta','Con alerta',L.reg)}</select>
+  <select data-l="reg" aria-label="Registros">${opt('','Registros: todos',L.reg)+opt('palp','Palpadas',L.reg)+opt('pren','Pasaron preñadas',L.reg)+opt('peso','Pesados',L.reg)+opt('entore','Entoradas',L.reg)+opt('dest','Destetados',L.reg)+opt('dsp','Destete sin peso',L.reg)+opt('dsn','Destete sin número nuevo',L.reg)+opt('prog','Movimiento programado',L.reg)+opt('mov','Movidos',L.reg)+opt('alerta','Con alerta',L.reg)}</select>
   </div><div id="listBody">${listBody()}</div>`;
 }
 function listBody(){ const r=filtrar(); return `<p class="hint">${r.length} animales</p><div class="list grid">${r.map(rowHTML).join('')}</div>`; }
 /* ---- resumen de movimientos: lote de origen -> lote de destino ---- */
-const MOTIVOS = ['Movimiento','Entore','Destete'];
+const MOTIVOS = ['Movimiento','Programado','Entore','Destete'];
 function movResumen(){
   const g=new Map();
   for(const id of order){ const a=animals.get(id), m=a.w.mov; if(!m) continue;
@@ -611,6 +752,65 @@ function viewMov(){
   </tbody><tfoot><tr><td colspan="3">Total</td><td class="n">${tot}</td><td></td></tr></tfoot></table>
   <p class="hint">Toque una fila para ver los animales. Cuenta el último movimiento de cada animal, desde el lote con que se cargó el Excel. "Quedan en origen" son los animales que hay hoy en ese lote, de los que tenía al cargar.</p>`;
 }
+/* ---- programar movimientos por días de gestación ----
+   Se guardan en meta.prog = {número: {a: lote destino, de: lote origen, gest: días al programar, ts}}.
+   En Palpar la vaca muestra la alerta y trae el movimiento preseleccionado; solo se mueve al guardar. */
+let G = {de:'', min:'', max:'', a:'', excl:{}};
+function progEstado(a){
+  const p=meta.prog&&meta.prog[a.id]; if(!p) return null;
+  if(loteNow(a)===p.a) return {k:'ok',t:'movida'};
+  if(a.w.palp&&a.w.palp.ts>=p.ts) return {k:'no',t:`palpada, quedó en ${loteNow(a)}`};
+  return {k:'pend',t:'pendiente'};
+}
+const progPend = a => { const p=meta.prog&&meta.prog[a.id]; return p&&progEstado(a).k==='pend'?p:null; };
+function candidatos(){
+  if(!G.de) return [];
+  const mn=parseInt(G.min,10), mx=parseInt(G.max,10);
+  return order.map(i=>animals.get(i)).filter(a=>loteNow(a)===G.de&&estadoNow(a)==='Preñada'&&
+    (!Number.isFinite(mn)||gestNow(a)>=mn)&&(!Number.isFinite(mx)||gestNow(a)<=mx)).sort((x,y)=>gestNow(y)-gestNow(x));
+}
+function progListHTML(){
+  if(!G.de) return '<p class="hint">Elija el lote que va a programar.</p>';
+  const c=candidatos(), sel=c.filter(a=>!G.excl[a.id]);
+  if(!c.length) return '<p class="hint">Ninguna vaca preñada de ese lote cumple el filtro.</p>';
+  return `<p class="hint">${c.length} vacas cumplen el filtro · ${sel.length} seleccionadas. Toque una para quitarla o volver a incluirla.</p>
+  <div class="plist">${c.map(a=>{ const p=meta.prog&&meta.prog[a.id], on=!G.excl[a.id];
+    return `<button class="res chk ${on?'':'off'}" data-gx="${esc(a.id)}"><i class="ck">${on?'✓':''}</i><b>${esc(a.id)}</b><span><b class="gd">${gestNow(a)} d</b> · ${esc(colorTxt(a))} · ${esc(ieTxt(a))}${p&&progEstado(a).k==='pend'?` · <em>ya programada → ${esc(p.a)}</em>`:''}</span></button>`; }).join('')}</div>
+  <button class="big" data-a="programar" ${sel.length&&G.a?'':'disabled'}>${G.a?`Programar ${sel.length} vacas → ${esc(G.a)}`:'Elija el lote de destino'}</button>`;
+}
+function viewProgramar(){
+  const opt=(v,t,c)=>`<option value="${esc(v)}" ${c===v?'selected':''}>${esc(t)}</option>`;
+  const conPren={}; for(const id of order){ const a=animals.get(id); if(estadoNow(a)==='Preñada') conPren[loteNow(a)]=(conPren[loteNow(a)]||0)+1; }
+  const lotes=Object.keys(conPren).sort((x,y)=>x.localeCompare(y,'es'));
+  const dest=meta.lotes.filter(l=>l!==G.de);
+  const pr=Object.entries(meta.prog||{}).map(([id,p])=>({id,p,a:animals.get(id)})).filter(x=>x.a).sort((x,y)=>x.p.a.localeCompare(y.p.a,'es')||y.p.gest-x.p.gest);
+  const nPend=pr.filter(x=>progEstado(x.a).k==='pend').length;
+  return `<div class="card progf"><h3>Programar movimientos</h3>
+  <p class="hint" style="text-align:left;margin:0">Filtre por días de gestación las vacas de un lote. Cuando pasen por Palpar les aparecerá la alerta con el lote destino ya seleccionado; el movimiento solo se guarda al guardar la palpación.</p>
+  <div class="field"><label>Lote a programar</label><select data-g="de">${opt('','Elija un lote',G.de)+lotes.map(l=>opt(l,`${l} (${conPren[l]} preñadas)`,G.de)).join('')}</select></div>
+  <div class="gr2"><div class="field"><label>Gestación desde (días)</label><input data-g="min" inputmode="numeric" value="${esc(G.min)}" placeholder="Ej. 180"></div>
+  <div class="field"><label>Hasta (días, opcional)</label><input data-g="max" inputmode="numeric" value="${esc(G.max)}" placeholder="Sin límite"></div></div>
+  <div class="field"><label>Mover al lote</label><select data-g="a">${opt('','Elija el lote destino',G.a)+dest.map(l=>opt(l,l,G.a)).join('')}<option value="__otro">Otro lote…</option></select></div>
+  </div>
+  <div id="progList" class="progl">${progListHTML()}</div>
+  <h3 style="margin-top:calc(8px*var(--k))">Movimientos programados${pr.length?` · ${nPend} pendientes de ${pr.length}`:''}</h3>
+  ${pr.length?`<table class="mtab"><thead><tr><th>Vaca</th><th>Origen → destino</th><th class="n">Gest.</th><th>Estado</th><th></th></tr></thead><tbody>
+  ${pr.map(({id,p,a})=>{const e=progEstado(a); return `<tr><td><b>${esc(id)}</b></td><td>${esc(p.de)} → <b>${esc(p.a)}</b><small>${fmtTs(p.ts)}</small></td><td class="n">${p.gest}</td><td><span class="tag ${e.k==='pend'?'a':e.k==='ok'?'g':''}">${esc(e.t)}</span></td><td>${e.k==='pend'?`<button class="x" data-pcan="${esc(id)}" aria-label="Quitar">✕</button>`:''}</td></tr>`;}).join('')}
+  </tbody></table>${nPend?`<button class="big sec" data-a="progCancel">Quitar los ${nPend} pendientes</button>`:''}`:'<p class="hint">Aún no hay movimientos programados.</p>'}`;
+}
+async function programar(){
+  const sel=candidatos().filter(a=>!G.excl[a.id]); if(!sel.length||!G.a) return;
+  const ya=sel.filter(a=>progPend(a)&&meta.prog[a.id].a!==G.a).length;
+  if(!await confirmBox('Programar movimiento',`${sel.length} vacas de ${G.de} pasarán a ${G.a} cuando se palpen.${ya?` ${ya} ya tenían otro destino programado y se cambiará.`:''}`,'Programar')) return;
+  meta.prog=meta.prog||{}; const ts=stamp();
+  for(const a of sel) meta.prog[a.id]={a:G.a,de:G.de,gest:gestNow(a),ts};
+  meta.cambios=(meta.cambios||0)+1; await saveMeta();
+  G.excl={}; render(); toast(`Programadas ${sel.length} vacas → ${G.a}`); recordatorio();
+}
+async function quitarProg(ids){
+  for(const id of ids) delete meta.prog[id];
+  meta.cambios=(meta.cambios||0)+1; await saveMeta(); render();
+}
 function verMov(i){
   const r=movRows[i]; if(!r) return;
   modal(`<div class="chead"><div class="num" style="font-size:calc(24px*var(--k))">${esc(r.de)} → ${esc(r.a)}</div><button class="close" data-a="closeM">Cerrar</button></div>
@@ -632,7 +832,7 @@ function detalle(id){
   if(puedePalpar(a)) links.push(`<button class="opt" data-go="palp" data-id="${esc(id)}">Palpar</button>`);
   if(PESABLES.includes(a.ea)) links.push(`<button class="opt" data-go="peso" data-id="${esc(id)}">Pesar</button>`);
   if(crias.has(id)||esCria(a)) links.push(`<button class="opt" data-go="dest" data-id="${esc(id)}">Destete</button>`);
-  modal(`<div class="chead"><div class="num">${esc(id)}</div><button class="close" data-a="closeM">Cerrar</button></div>
+  modal(`<div class="chead"><div class="num">${esc(id)}</div><button class="close" data-a="closeM">Cerrar</button></div>${fotos.has(id)?`<button class="thumb wide" data-fver="${esc(id)}"><img data-foto="${esc(id)}" alt="Foto de ${esc(id)}"></button>`:''}
   ${kv([['EA',eaNow(a)],['Color',colorTxt(a)],['I.E.',ieTxt(a)],['Lote',loteNow(a)],['Estado reprod.',estadoNow(a)||'—'],estadoNow(a)==='Preñada'?['Gest.',`${gestNow(a)} días`]:null])}
   <h3>Registros</h3>${recs.join('')||'<p class="hint">Sin registros.</p>'}<h3>Abrir o corregir en</h3><div class="opts">${links.join('')}</div>`);
 }
@@ -667,8 +867,9 @@ function viewFile(){
   <div class="alert ${c?'a':'g'}">${c?`${c} cambios sin descargar.`:'Todo el avance está descargado.'}</div>
   <button class="big" data-a="download">Descargar Excel</button>
   <button class="big sec" data-a="share">Enviar por WhatsApp o Drive</button>
+  ${fotos.size?`<button class="big sec" data-a="dlFotos">📷 Descargar fotos (${fotos.size} · ${pesoMB([...fotos.values()].reduce((s,f)=>s+f.size,0))})</button>`:''}
   <button class="big sec" data-a="upload">Subir otro Excel</button>
-  <p class="hint">${order.length} animales · Inventario cargado el ${fmtD(meta.baseDate)}${meta.lastExport?` · Última descarga ${fmtD(meta.lastExport.slice(0,10))} ${meta.lastExport.slice(11,16)}`:''}<br>${persisted===false?'El celular no garantiza el almacenamiento: descargue con frecuencia.<br>':''}Versión ${VERSION}</p>`;
+  <p class="hint">${order.length} animales · Datos del Excel al ${fmtD(meta.baseDate)} <button class="lnk" data-a="cambiarFecha">Corregir fecha</button>${meta.lastExport?` · Última descarga ${fmtD(meta.lastExport.slice(0,10))} ${meta.lastExport.slice(11,16)}`:''}<br>${persisted===false?'El celular no garantiza el almacenamiento: descargue con frecuencia.<br>':''}Versión ${VERSION}</p>`;
 }
 const serial = iso => dayN(iso)+25569;
 const cD = iso => iso?{t:'n',v:serial(iso),z:'dd/mm/yyyy'}:'';
@@ -682,14 +883,14 @@ function hoja(wb,name,head,rows){
 }
 function construirExcel(){
   const wb=XLSX.utils.book_new(), all=order.map(i=>animals.get(i));
-  hoja(wb,'Inventario',['Número','Nuevo número','Sexo','EA','EA actualizado','Color','I.E.','Lote anterior','Lote actual','Estado reprod.','Gest. hoy','Detalle tacto','Peso nuevo','Inventariado','Observación','Última modificación fecha','Última modificación hora'],
-    all.map(a=>{const w=a.w;return [a.id,w.dest?.nuevo||'',a.sexo,a.ea,eaNow(a),a.color,ieTxt(a),a.lote,loteNow(a),estadoNow(a)||'',estadoNow(a)==='Preñada'?gestNow(a):'',detNow(a)||'',w.peso?.peso??w.dest?.peso??'',w.inv?'SI':'NO',w.obs||'',fecha(w.ts),hora(w.ts)];}));
+  hoja(wb,'Inventario',['Número','Nuevo número','Sexo','EA','EA actualizado','Color','I.E.','Lote anterior','Lote actual','Estado reprod.','Gest. hoy','Detalle tacto','Peso nuevo','Inventariado','Observación','Foto','Última modificación fecha','Última modificación hora'],
+    all.map(a=>{const w=a.w;return [a.id,w.dest?.nuevo||'',a.sexo,a.ea,eaNow(a),a.color,ieTxt(a),a.lote,loteNow(a),estadoNow(a)||'',estadoNow(a)==='Preñada'?gestNow(a):'',detNow(a)||'',w.peso?.peso??w.dest?.peso??'',w.inv?'SI':'NO',w.obs||'',fotoNombre(a.id),fecha(w.ts),hora(w.ts)];}));
   const P=[],W=[],E=[],D=[],M=[],O=[];
   for(const a of all){ const w=a.w;
     if(w.palp){const p=w.palp;P.push([a.id,ieTxt(a),a.ea,loteNow(a),p.prev||'',p.prevGest||'',p.res==='V'?'Vacía':p.res==='C'?'Preñez confirmada':'Preñada',p.res==='V'?'':p.dias,p.det||'',p.alerta||'',fecha(p.ts),hora(p.ts)]);}
     if(w.peso){const p=w.peso;W.push([a.id,ieTxt(a),loteNow(a),cD(p.fechaAnt),p.pesoAnt||'',p.peso,p.dias??'',p.gmd==null?'':Math.round(p.gmd),p.kgmes==null?'':Math.round(p.kgmes*10)/10,p.alerta||'',fecha(p.ts),hora(p.ts)]);}
     if(w.entore){const p=w.entore;E.push([a.id,ieTxt(a),p.peso,a.lote,p.lote,'NV',fecha(p.ts),hora(p.ts)]);}
-    if(w.dest){const d=w.dest;D.push([d.madre||'',a.id,a.sexo==='H'?'Hembra':'Macho',Math.round(mesesNow(a)*10)/10,colorTxt(a),d.dec==='si'?'SI':'NO',d.peso??'',d.dst==='venta'?'Venta':d.dst==='finca'?'Queda en finca':'',d.nuevo||'',d.lote||'',d.dec==='si'&&d.madre?CFG.loteDestete:'',fecha(d.ts),hora(d.ts)]);}
+    if(w.dest){const d=w.dest;D.push([d.madre||'',a.id,a.sexo==='H'?'Hembra':'Macho',Math.round(mesesNow(a)*10)/10,colorTxt(a),d.dec==='si'?'SI':'NO',d.peso??'',d.dst==='venta'?'Venta':d.dst==='finca'?'Queda en finca':'',d.nuevo||'',d.lote||'',d.dec==='si'&&d.madre?(animals.get(d.madre)&&loteNow(animals.get(d.madre)))||CFG.loteSecado:'',fecha(d.ts),hora(d.ts)]);}
     if(w.mov){const m=w.mov;M.push([a.id,m.de,m.a,m.motivo,fecha(m.ts),hora(m.ts)]);}
     if(w.obs) O.push([a.id,loteNow(a),w.obs,fecha(w.obsTs),hora(w.obsTs)]);
   }
@@ -698,15 +899,17 @@ function construirExcel(){
   hoja(wb,'Entores',['Número','I.E.','Peso','Lote anterior','Lote destino','EA nuevo','Fecha','Hora'],E);
   hoja(wb,'Destetes',['Madre','Cría','Sexo cría','Edad meses','Color','Destetada','Peso destete','Destino','Número nuevo','Lote cría','Lote madre','Fecha','Hora'],D);
   hoja(wb,'Movimientos',['Número','Lote anterior','Lote nuevo','Motivo','Fecha','Hora'],M);
-  const CL=conteoLotes(), RM=movResumen().map(r=>[r.de,r.a,r.mot.Movimiento||0,r.mot.Entore||0,r.mot.Destete||0,r.n,CL.ini[r.de]||0,CL.hoy[r.de]||0]);
-  if(RM.length) RM.push(['TOTAL','',...[2,3,4,5].map(c=>RM.reduce((s,r)=>s+r[c],0)),'','']);
+  const CL=conteoLotes(), RM=movResumen().map(r=>[r.de,r.a,r.mot.Movimiento||0,r.mot.Programado||0,r.mot.Entore||0,r.mot.Destete||0,r.n,CL.ini[r.de]||0,CL.hoy[r.de]||0]);
+  if(RM.length) RM.push(['TOTAL','',...[2,3,4,5,6].map(c=>RM.reduce((s,r)=>s+r[c],0)),'','']);
+  const PG=Object.entries(meta.prog||{}).filter(([id])=>animals.has(id)).map(([id,p])=>{const a=animals.get(id);return [id,ieTxt(a),p.de,p.gest,p.a,fecha(p.ts),progEstado(a).t,loteNow(a)];});
+  hoja(wb,'Mov. programados',['Número','I.E.','Lote origen','Gest. al programar','Lote programado','Programado el','Estado','Lote actual'],PG);
   for(const [modo,nom] of [['inicial','Inv. lote inicial'],['actual','Inv. lote actual']]){
     const {t,cols,lotes}=tablaLotes(modo);
     const rows=lotes.map(l=>{ const v=cols.map(c=>t[l][c]||0); return [l,...v,v.reduce((a,b)=>a+b,0)]; });
     rows.push(['TOTAL',...cols.map((c,i)=>rows.reduce((s,r)=>s+r[i+1],0)),order.length]);
     hoja(wb,nom,['Lote',...cols,'Total'],rows);
   }
-  hoja(wb,'Resumen movimientos',['Lote origen','Lote destino','Movimiento manual','Entore','Destete','Total animales','Había en origen','Quedan en origen'],RM);
+  hoja(wb,'Resumen movimientos',['Lote origen','Lote destino','Movimiento manual','Programado','Entore','Destete','Total animales','Había en origen','Quedan en origen'],RM);
   hoja(wb,'Observaciones',['Número','Lote','Observación','Fecha','Hora'],O);
   const m={...meta,order:undefined,cambios:0};
   const bk=XLSX.utils.aoa_to_sheet([['APP_CORRAL',1,order.length],['META',JSON.stringify(m)],...all.map(a=>[a.id,JSON.stringify(a)])]);
@@ -782,7 +985,7 @@ function leerRespaldo(wb){
   if(list.length!==rows[0][2]) throw new Error('El archivo de avance está incompleto.');
   return {m,list};
 }
-function lotesDe(list){ return [...new Set([...list.map(a=>a.lote).filter(Boolean),CFG.loteDestete,CFG.loteVenta,CFG.loteEntore])].sort((a,b)=>a.localeCompare(b,'es')); }
+function lotesDe(list){ return [...new Set([...list.map(a=>a.lote).filter(Boolean),CFG.loteDestete,CFG.loteSecado,CFG.loteVenta,CFG.loteEntore])].sort((a,b)=>a.localeCompare(b,'es')); }
 async function alSubir(file){
   let wb; try{ wb=XLSX.read(await file.arrayBuffer(),{type:'array'}); }catch(e){ return alertBox('No se pudo leer','El archivo no es un Excel válido.'); }
   try{
@@ -790,32 +993,58 @@ async function alSubir(file){
       const {m,list}=leerRespaldo(wb);
       const hechos=list.filter(a=>a.w.inv).length;
       return pasoReemplazo(`Archivo de avance de ${m.finca}: ${list.length} animales, ${hechos} inventariados.`,null,async()=>{
-        await replaceAll({...m,cambios:0},list); F={inv:{},palp:{},peso:{},dest:{}}; tab='list'; render(); toast('Avance restaurado');
+        await borrarTodasFotos(); await replaceAll({...m,cambios:0},list); F={inv:{},palp:{},peso:{},dest:{}}; tab='list'; render(); toast('Avance restaurado');
       });
     }
     const {list,total,dups}=leerSG(wb);
     const avisos=[]; if(total&&total!==list.length) avisos.push(`El archivo indica ${total} animales y se leyeron ${list.length}.`);
     if(dups.length) avisos.push(`Números repetidos ignorados: ${dups.slice(0,8).join(', ')}.`);
-    return pasoReemplazo(`Excel con ${list.length} animales.`+(avisos.length?' '+avisos.join(' '):''),meta?.finca||'',async finca=>{
-      await replaceAll({finca,baseDate:today(),fileName:file.name,lotes:lotesDe(list),cambios:0,lastExport:null},list);
+    return pasoReemplazo(`Excel con ${list.length} animales.`+(avisos.length?' '+avisos.join(' '):''),meta?.finca||'',async (finca,fecha)=>{
+      await borrarTodasFotos(); await replaceAll({finca,baseDate:fecha,fileName:file.name,lotes:lotesDe(list),cambios:0,lastExport:null},list);
       F={inv:{},palp:{},peso:{},dest:{}}; tab='inv'; render(); toast('Inventario cargado'); pedirPersistencia();
     });
   }catch(e){ return alertBox('Archivo no válido',e.message); }
 }
+/* Fecha de los datos del Excel (DD/MM/AAAA) -> ISO, o un mensaje de error */
+function leerFechaExcel(txt){
+  const m=String(txt||'').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(!m) return {err:'Escriba la fecha completa: DD/MM/AAAA.'};
+  const d=+m[1], mo=+m[2], y=+m[3], dt=new Date(y,mo-1,d);
+  if(dt.getFullYear()!==y||dt.getMonth()!==mo-1||dt.getDate()!==d) return {err:'Esa fecha no existe.'};
+  const iso=`${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  if(iso>today()) return {err:'La fecha no puede ser posterior a hoy.'};
+  return {iso, dias:daysBetween(iso,today())};
+}
+function campoFecha(id,val){ return `<div class="field"><label for="${id}">Fecha en que se generó el Excel en SG</label><input id="${id}" class="fecha" inputmode="numeric" maxlength="10" placeholder="DD/MM/AAAA" value="${esc(val||'')}" autocomplete="off"><small class="ferr" id="${id}E"></small></div>`; }
+async function validarFecha(m,id){
+  const el=m.querySelector('#'+id), r=leerFechaExcel(el.value), er=m.querySelector('#'+id+'E');
+  if(r.err){ er.textContent=r.err; el.focus(); return null; }
+  er.textContent='';
+  if(r.dias>45&&!await new Promise(ok=>{ er.innerHTML=`Son ${r.dias} días atrás. <button class="opt" type="button">Sí, es correcta</button>`; er.querySelector('button').onclick=()=>ok(true); })) return null;
+  return r.iso;
+}
+function cambiarFecha(){
+  const m=modal(`<h2>Fecha del Excel</h2><p>Fecha en que se generó en SG el Excel de ${esc(meta.finca)}. Cambiarla recalcula días de gestación, días abiertos y edades (no cambia lo ya registrado).</p>
+  ${campoFecha('cD',fmtD(meta.baseDate))}<button class="big" id="cOk">Guardar fecha</button><button class="big sec" data-a="closeM">Cancelar</button>`);
+  m.querySelector('#cOk').onclick=async()=>{ const fe=await validarFecha(m,'cD'); if(!fe) return; meta.baseDate=fe; meta.cambios=(meta.cambios||0)+1; await saveMeta(); closeModal(); render(); toast('Fecha del Excel: '+fmtD(fe)); };
+}
 function pasoReemplazo(desc,finca,run){
   const c=meta?.cambios||0, hay=!!meta;
   const m=modal(`<h2>Cargar archivo</h2><p>${esc(desc)}</p>
-  ${finca!==null?`<div class="field"><label for="mF">Nombre de la finca</label><input id="mF" value="${esc(finca)}" autocomplete="off"></div>`:''}
+  ${finca!==null?`<div class="field"><label for="mF">Nombre de la finca</label><input id="mF" value="${esc(finca)}" autocomplete="off"></div>${campoFecha('mD','')}<p class="hint" style="text-align:left;margin:0">Con esta fecha se calculan los días de gestación, días abiertos y edades. Use la fecha del Excel, no la de hoy, si se generó antes.</p>`:''}
   ${hay?`<div class="alert r">Esto borra el inventario actual de ${esc(meta.finca)}.${c?` Tiene ${c} cambios sin descargar.`:''}</div>`:''}
   ${hay?'<button class="big sec" id="mDl">Descargar avance actual primero</button>':''}
+  ${hay&&fotos.size?`<div class="alert a">También se borrarán las ${fotos.size} fotos de este equipo.</div><button class="big sec" id="mFt">📷 Descargar fotos primero</button>`:''}
   <button class="big ${hay?'danger':''}" id="mGo">${hay?'Borrar y cargar':'Cargar'}</button><button class="big sec" id="mNo">Cancelar</button>`);
   if(hay) m.querySelector('#mDl').onclick=async e=>{ await descargar(); e.target.textContent='Avance descargado ✓'; };
+  if(m.querySelector('#mFt')) m.querySelector('#mFt').onclick=async e=>{ await descargarFotos(); e.target.textContent='Fotos descargadas ✓'; };
   m.querySelector('#mNo').onclick=closeModal;
   m.querySelector('#mGo').onclick=async()=>{
-    let f=null;
-    if(finca!==null){ f=m.querySelector('#mF').value.trim(); if(!f){ m.querySelector('#mF').focus(); return; } }
+    let f=null, fe=null;
+    if(finca!==null){ f=m.querySelector('#mF').value.trim(); if(!f){ m.querySelector('#mF').focus(); return; }
+      fe=await validarFecha(m,'mD'); if(!fe) return; }
     if(hay&&(meta.cambios||0)>0&&!await segundo()) return;
-    closeModal(); await run(f);
+    closeModal(); await run(f,fe);
   };
   function segundo(){ return new Promise(res=>{ const s=document.createElement('div'); s.className='alert r';
     s.innerHTML='Aún hay cambios sin descargar y se perderán.<br><br><button class="big danger">Perder cambios y cargar</button>';
@@ -851,9 +1080,16 @@ document.addEventListener('click',async e=>{
   if(d.dec){ F.dest.dec=d.dec; return renderMain(); }
   if(d.dst){ F.dest.dst=d.dst; return renderMain(); }
   if(d.tl){ TL=d.tl; if($('#modal .tlwrap.open')) abrirTabla(); return renderMain(); }
+  if(d.fver) return verFoto(d.fver);
+  if(d.fdel) return borrarFoto(d.fdel);
+  if(d.pd) return verPendDest(d.pd);
+  if(d.gx){ G.excl[d.gx]=!G.excl[d.gx]; $('#progList').innerHTML=progListHTML(); return; }
+  if(d.pcan){ if(await confirmBox('Quitar programación',`La vaca ${d.pcan} ya no tendrá movimiento programado.`,'Quitar',true)) await quitarProg([d.pcan]); return; }
   if(d.qmov){ F[tab].mov=F[tab].mov===d.qmov?'':d.qmov; return renderMain(); }
   if(d.cria){ cargarDest(d.cria); return renderMain(); }
   switch(d.a){
+    case 'foto': return pedirFoto(d.fid);
+    case 'dlFotos': return descargarFotos();
     case 'goFile': if(!await salir()) return; tab='file'; return render();
     case 'clear': if(!await salir()) return; F[tab]={}; return renderMain();
     case 'toInv': { const id=F[tab].id; F[tab]={}; tab='inv'; render(); return pick(id); }
@@ -863,6 +1099,10 @@ document.addEventListener('click',async e=>{
     case 'savePalp': return savePalp();
     case 'savePeso': return savePeso();
     case 'saveDest': return saveDest();
+    case 'programar': return programar();
+    case 'cambiarFecha': return cambiarFecha();
+    case 'progCancel': { const ids=Object.keys(meta.prog||{}).filter(id=>animals.has(id)&&progPend(animals.get(id)));
+      if(await confirmBox('Quitar pendientes',`Se quitará la programación de ${ids.length} vacas que aún no se han palpado.`,'Quitar',true)) await quitarProg(ids); return; }
     case 'closeM': return closeModal();
     case 'prog': return abrirProg();
     case 'tlotes': return abrirTabla();
@@ -881,6 +1121,8 @@ document.addEventListener('input',e=>{
   const el=e.target, k=el.dataset.f;
   if(el.id==='q'){ F[tab].q=el.value.toUpperCase(); return pintarResultados(); }
   if(el.dataset.l==='q'){ L.q=el.value; $('#listBody').innerHTML=listBody(); return; }
+  if(el.classList.contains('fecha')){ const n=el.value.replace(/\D/g,'').slice(0,8); el.value=n.length>4?`${n.slice(0,2)}/${n.slice(2,4)}/${n.slice(4)}`:n.length>2?`${n.slice(0,2)}/${n.slice(2)}`:n; const er=document.getElementById(el.id+'E'); if(er) er.textContent=''; return; }
+  if(el.dataset.g&&el.tagName==='INPUT'){ G[el.dataset.g]=el.value.replace(/\D/g,''); G.excl={}; $('#progList').innerHTML=progListHTML(); return; }
   if(!k||!F[tab]) return;
   if(el.tagName==='SELECT') return;
   F[tab][k]=el.value;
@@ -891,6 +1133,10 @@ document.addEventListener('input',e=>{
 });
 document.addEventListener('change',e=>{
   const el=e.target;
+  if(el.dataset.g&&el.tagName==='SELECT'){
+    if(el.value==='__otro'){ const n=(prompt('Nombre del lote nuevo')||'').trim().toUpperCase(); if(n){ if(!meta.lotes.includes(n)){ meta.lotes.push(n); meta.lotes.sort((a,b)=>a.localeCompare(b,'es')); saveMeta(); } G.a=n; } return renderMain(); }
+    G[el.dataset.g]=el.value; if(el.dataset.g==='de'){ G.excl={}; if(G.a===G.de) G.a=''; } return renderMain();
+  }
   if(el.dataset.p){ P[el.dataset.p]=el.value; if(progOpen) abrirProg(); return renderMain(); }
   if(el.dataset.l&&el.dataset.l!=='q'){ L[el.dataset.l]=el.value; return renderMain(); }
   if(el.tagName==='SELECT'&&el.dataset.f){
@@ -917,8 +1163,9 @@ window.addEventListener('beforeunload',e=>{ if(meta&&((meta.cambios||0)>0||sinGu
       buscar(); document.addEventListener('visibilitychange',()=>{ if(!document.hidden) buscar(); });
     }).catch(()=>{});
   }
-  try{ db=await openDB(); await loadDB(); }
+  try{ db=await openDB(); await loadDB(); await cargarFotos(); }
   catch(e){ await alertBox('Error de almacenamiento','Este navegador no permite guardar datos. Salga del modo privado o use otro navegador.'); }
+  if(meta&&!meta.lotes.includes(CFG.loteSecado)){ meta.lotes.push(CFG.loteSecado); meta.lotes.sort((a,b)=>a.localeCompare(b,'es')); await saveMeta(); }
   if(meta) await pedirPersistencia();
   render();
   if(meta&&meta.cambios>0) toastBackup(meta.cambios);

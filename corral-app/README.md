@@ -28,3 +28,18 @@ App instalable (PWA) para registrar datos en corral sin internet. Los datos vive
 
 ## Versión 4.0.2
 - Pesar: también se pesan machos de levante (ML), con rango de 80 a 500 kg. El botón ENTORE sigue solo para hembras de levante.
+
+## Versión 5.0.0
+- Destete en tres pasos: la decisión (destetar, finca o venta) se guarda sin peso ni número nuevo; luego se completan buscando la vaca o la cría. Panel "Destetes pendientes" (sin peso / sin número nuevo).
+- La vaca destetada pasa a SECADO (antes DESTETE). La cría que queda en finca pasa a DESTETE y la de venta a VENTA. Al palpar la vaca sale el aviso "SEPARAR → SECADO".
+- Movimientos → Programar movimientos: filtrar vacas preñadas de un lote por días de gestación y programar el lote destino. En Palpar sale "MOVER A ..." con el lote ya seleccionado; solo se mueve al guardar y se puede cambiar.
+- Excel: hoja "Mov. programados" y columna "Programado" en el resumen.
+
+## Versión 5.1.0
+- Al subir el Excel de SG se pide la fecha en que se generó (DD/MM/AAAA). Con ella se calculan gestación, días abiertos y edades. Se puede corregir en Archivo. El archivo de avance conserva esa fecha al pasar a otro equipo.
+- Destete: la vaca ya no queda inventariada (se inventaría al palparla); el interruptor de Destete es de la cría. Sigue el movimiento a SECADO y su aviso.
+
+## Versión 5.2.0
+- Foto opcional por animal (apartado plegable "Foto (opcional)" en Inventario, Palpar, Pesar y Destete; en Destete es de la cría). Se puede cambiar o borrar.
+- Las fotos se reducen (~150 KB) y se guardan solo en el equipo. El Excel trae la columna "Foto" con el nombre del archivo; las fotos se descargan aparte en Archivo → "Descargar fotos" (.zip con finca_número_fecha.jpg).
+- Al cargar otro Excel se avisa y se borran las fotos del equipo.
