@@ -1,6 +1,6 @@
 'use strict';
 /* Corral - recolector de datos. Todo vive en el celular (IndexedDB). */
-const VERSION = '5.2.0';
+const VERSION = '5.4.0';
 const BACKUP_SHEET = '_respaldo';
 const CFG = {
   hlMin: 80, hlMax: 350, mlMin: 80, mlMax: 500, entoreMin: 295, destMin: 80, destMax: 190,
@@ -437,6 +437,7 @@ function comunes(a,f,opts={}){
   return `<button class="switch ${f.inv?'on':''}" data-a="toggleInv"><span>${esc(opts.invTxt||'Inventariado')}</span><i></i></button>
   ${quick}${opts.noMov?'':`<details ${f.mov?'open':''}><summary>Mover de lote${f.mov?`: ${esc(f.mov)}`:''}</summary><div class="inner"><div class="field"><label for="fMov">Lote actual: ${esc(loteNow(a))}</label>
   <select id="fMov" data-f="mov"><option value="">Sin mover</option>${sel}<option value="__otro">Otro lote…</option></select></div></div></details>`}
+  ${!opts.noMov&&!opts.fotoId&&f.mov?avisoFamilia(a,f.mov):''}
   ${fotoHTML(opts.fotoId||a.id,!!opts.fotoId)}
   <details ${f.obs?'open':''}><summary>Observación</summary><div class="inner"><div class="field"><textarea data-f="obs" aria-label="Observación" placeholder="Opcional">${esc(f.obs||'')}</textarea></div></div></details>`;
 }
@@ -451,7 +452,8 @@ function viewInv(a){
 async function saveInv(){
   const a=animals.get(F.inv.id), f=F.inv, w=clone(a.w), ts=stamp();
   aplicarComunes(a,w,f,ts);
-  await guardar([[a,w]], `${a.id}: ${f.inv?'inventariado':'guardado'}`); F.inv={}; render();
+  const pairs=[[a,w]], cs=moverFamilia(a,w,ts,pairs);
+  await guardar(pairs, `${a.id}: ${f.inv?'inventariado':'guardado'}${conFam(cs)}`); F.inv={}; render();
 }
 /* Últimos destinos usados: primero los que salieron del mismo lote */
 function recordarMov(de,a){ const r=(meta.recMov||[]).filter(x=>!(x.de===de&&x.a===a)); r.unshift({de,a}); meta.recMov=r.slice(0,15); }
@@ -459,6 +461,42 @@ function rapidos(a){
   const cur=loteNow(a), r=meta.recMov||[], out=[];
   for(const x of [...r.filter(x=>x.de===cur),...r]) if(x.a!==cur&&!out.includes(x.a)) out.push(x.a);
   return out.slice(0,3);
+}
+/* Las crías sin destetar acompañan a la madre cuando ella se mueve de lote */
+const criasSinDestetar = (m,pairs=[]) => (crias.get(m.id)||[]).filter(i=>i!==m.id).map(i=>animals.get(i)).filter(c=>{
+  const p=pairs.find(([x])=>x===c), w=p?p[1]:c.w; return !(w.dest&&w.dest.dec==='si'); });
+function seguirMadre(m,w,ts,pairs){
+  if(!w.mov||w.mov.ts!==ts||w.mov.motivo==='Destete') return [];
+  const ids=[];
+  for(const c of criasSinDestetar(m,pairs)){
+    let p=pairs.find(([x])=>x===c); if(!p){ p=[c,clone(c.w)]; pairs.push(p); }
+    const cw=p[1]; if((cw.mov?cw.mov.a:c.lote)===w.mov.a) continue;
+    cw.mov={de:c.lote,a:w.mov.a,motivo:w.mov.motivo,ts,conMadre:m.id}; cw.ts=ts; ids.push(c.id);
+  }
+  return ids;
+}
+/* Si se mueve una cría sin destetar, se mueven su madre y sus hermanos sin destetar */
+function madreDe(c){ return esCria(c)&&c.madre&&animals.has(c.madre)?animals.get(c.madre):null; }
+function seguirCria(c,w,ts,pairs){
+  if(!w.mov||w.mov.ts!==ts||w.mov.motivo==='Destete'||(w.dest&&w.dest.dec==='si')) return [];
+  const m=madreDe(c); if(!m) return [];
+  let p=pairs.find(([x])=>x===m); if(!p){ p=[m,clone(m.w)]; pairs.push(p); }
+  const mw=p[1], ids=[];
+  if((mw.mov?mw.mov.a:m.lote)!==w.mov.a){ mw.mov={de:m.lote,a:w.mov.a,motivo:w.mov.motivo,ts,conCria:c.id}; mw.ts=ts; ids.push('vaca '+m.id); }
+  for(const h of criasSinDestetar(m,pairs)){ if(h===c) continue;
+    let q=pairs.find(([x])=>x===h); if(!q){ q=[h,clone(h.w)]; pairs.push(q); }
+    if((q[1].mov?q[1].mov.a:h.lote)!==w.mov.a){ q[1].mov={de:h.lote,a:w.mov.a,motivo:w.mov.motivo,ts,conMadre:m.id}; q[1].ts=ts; ids.push('cría '+h.id); } }
+  return ids;
+}
+const moverFamilia = (a,w,ts,pairs) => esCria(a) ? seguirCria(a,w,ts,pairs) : seguirMadre(a,w,ts,pairs).map(i=>'cría '+i);
+const conFam = ids => ids.length?' + '+ids.join(', '):'';
+const conCria = ids => ids.length?` + cría${ids.length>1?'s':''} ${ids.join(', ')}`:'';
+function avisoFamilia(a,dest){
+  let t='';
+  if(esCria(a)){ const m=madreDe(a); if(m&&!(a.w.dest&&a.w.dest.dec==='si')){ const hs=criasSinDestetar(m).filter(h=>h!==a);
+    t=`La madre ${esc(m.id)}${hs.length?` y la cría ${hs.map(h=>esc(h.id)).join(', ')}`:''} también se mueve${hs.length?'n':''} a ${esc(dest)}.`; } }
+  else { const cs=criasSinDestetar(a); if(cs.length) t=`La cría ${cs.map(c=>esc(c.id)).join(', ')} también se mueve a ${esc(dest)}.`; }
+  return t?`<div class="alert b">${t}</div>`:'';
 }
 function aplicarComunes(a,w,f,ts,sinMov){
   if(f.inv!==!!w.inv||(f.inv&&!w.invTs)){ w.inv=f.inv; w.invTs=ts; }
@@ -541,7 +579,8 @@ async function savePalp(){
   const pg=progPend(a);
   aplicarComunes(a,w,f,ts);
   if(pg&&w.mov&&w.mov.ts===ts&&w.mov.a===pg.a) w.mov.motivo='Programado';
-  await guardar([[a,w]],`${a.id}: ${p.res==='V'?'Vacía '+p.det:`Preñada ${p.dias} d`}`); F.palp={}; render();
+  const pairs=[[a,w]], cs=moverFamilia(a,w,ts,pairs);
+  await guardar(pairs,`${a.id}: ${p.res==='V'?'Vacía '+p.det:`Preñada ${p.dias} d`}${conFam(cs)}`); F.palp={}; render();
 }
 
 /* ---- pesaje ---- */
@@ -659,8 +698,8 @@ async function saveDest(){
   if(f.inv!==!!wc.inv){ wc.inv=f.inv; wc.invTs=ts; }
   wc.ts=ts;
   aplicarComunes(m,wm,{...f,inv:!!wm.inv},ts,f.dec==='si');   // la vaca se inventaría al palparla, no en destete
-  const falta=faltaDest({w:wc});
-  await guardar(same?[[c,wc]]:[[c,wc],[m,wm]],`${c.id}: ${f.dec==='si'?(f.dst==='venta'?'destete, venta':'destete, queda en finca')+(falta.length?` (falta ${falta.join(' y ')})`:''):'no se desteta'}`);
+  const falta=faltaDest({w:wc}), pairs=same?[[c,wc]]:[[c,wc],[m,wm]];
+  await guardar(pairs,`${c.id}: ${f.dec==='si'?(f.dst==='venta'?'destete, venta':'destete, queda en finca')+(falta.length?` (falta ${falta.join(' y ')})`:''):'no se desteta'}`);
   F.dest={}; render();
 }
 
@@ -941,7 +980,22 @@ async function enviar(){
   if(navigator.canShare&&navigator.canShare({files:[file]})){
     try{ await navigator.share({files:[file],title:name}); await marcarDescargado(); toast('Archivo enviado'); }
     catch(e){ if(e.name!=='AbortError') toast('No se pudo enviar. Use Descargar Excel.'); }
-  } else return alertBox('No disponible','Este celular no permite enviar directamente. Use Descargar Excel y compártalo desde sus archivos.');
+  } else return enviarManual(name,blob);
+}
+/* Android y tablets no permiten compartir archivos .xlsx desde una app web:
+   se guarda en Descargas y se abre WhatsApp para adjuntarlo como Documento. */
+async function enviarManual(name,blob){
+  const url=URL.createObjectURL(blob), a=document.createElement('a');
+  a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
+  await marcarDescargado();
+  const txt=encodeURIComponent(`Avance Corral ${meta.finca} ${fmtD(today())}: ${name}`);
+  modal(`<h2>Enviar por WhatsApp</h2>
+  <div class="alert g">El archivo quedó guardado en <b>Descargas</b>:<br><b class="fname">${esc(name)}</b></div>
+  <ol class="pasos"><li>Toque <b>Abrir WhatsApp</b> y elija el chat.</li><li>Toque el clip <b>📎</b> y luego <b>Documento</b>.</li><li>Elija <b>${esc(name)}</b> (aparece de primero) y envíelo.</li></ol>
+  <a class="big wa" href="whatsapp://send?text=${txt}">Abrir WhatsApp</a>
+  <p class="hint" style="text-align:left">Para Drive: abra la app Drive, toque <b>+</b> → <b>Subir</b> → Descargas y elija el archivo.</p>
+  <button class="big sec" data-a="closeM">Listo</button>`);
 }
 
 /* ---- leer Excel ---- */

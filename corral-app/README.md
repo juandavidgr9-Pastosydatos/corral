@@ -43,3 +43,11 @@ App instalable (PWA) para registrar datos en corral sin internet. Los datos vive
 - Foto opcional por animal (apartado plegable "Foto (opcional)" en Inventario, Palpar, Pesar y Destete; en Destete es de la cría). Se puede cambiar o borrar.
 - Las fotos se reducen (~150 KB) y se guardan solo en el equipo. El Excel trae la columna "Foto" con el nombre del archivo; las fotos se descargan aparte en Archivo → "Descargar fotos" (.zip con finca_número_fecha.jpg).
 - Al cargar otro Excel se avisa y se borran las fotos del equipo.
+
+## Versión 5.3.0
+- Al mover de lote una vaca con cría sin destetar (Inventario, Palpar o movimiento programado), la cría se mueve con ella al mismo lote. Aviso en pantalla antes de guardar; Deshacer revierte ambas. Las crías ya destetadas no se mueven.
+- sw.js: al actualizar solo borra sus propias copias (corral-), para convivir con otras apps del mismo dominio.
+
+## Versión 5.4.0
+- Movimiento en los dos sentidos: si se mueve una cría sin destetar, también se mueven su madre y sus hermanos sin destetar. Destete no cambia: tiene su propio movimiento.
+- Enviar por WhatsApp en Android y tablet: guarda el Excel en Descargas y abre WhatsApp con los pasos para adjuntarlo como Documento (Android no permite compartir .xlsx desde una app web). En iPhone sigue el menú de compartir.
